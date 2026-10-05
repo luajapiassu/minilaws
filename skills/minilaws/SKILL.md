@@ -6,7 +6,7 @@ description: Write and repair laws and proofs for minilaws, a proof checker for 
 # minilaws
 
 The project's **laws** (`LAWS.laws`) are statements its code must always satisfy. They are
-**human-owned**: a hook blocks you from editing them. After every edit to a file listed in
+**human-owned**: a hook blocks you from editing them and `minilaws.toml`. After every edit to a file listed in
 `minilaws.toml`, a hook re-checks every proof. If it reports `REJECTED`, your change broke a
 law, or a proof no longer fits the code.
 
@@ -16,10 +16,11 @@ law, or a proof no longer fits the code.
 2. Decide whether the **code** is wrong (you introduced a bug) or the **proof** is stale (the
    code is right, but it now computes differently).
 3. Fix the code or the proof. **Never** weaken a law, and never route around the check (for
-   example, by renaming files out of `minilaws.toml` or editing the laws through Bash).
+   example, by deleting the `from minilaws import Nat` marker, moving code into a `.laws` file,
+   or editing the laws or `minilaws.toml` through Bash).
 4. If you believe a law itself is wrong, stop and ask the user.
 
-Run the check by hand with `python <plugin>/minilaws.py <files in minilaws.toml order>`.
+Run the check by hand with `minilaws check` (or `python <plugin>/minilaws.py check`).
 
 ## Language
 
@@ -79,7 +80,11 @@ Allowed:
 - Parameters and results annotated `Nat`.
 - At most one `if m == 0: return ...`, followed by one `return ...`.
 - Recursion only as `f(..., m - 1, ...)`, with the other arguments unchanged.
-- Literals, `x + <int>`, and calls to functions defined earlier in the file.
+- Literals, `x + <int>`, and calls to functions defined earlier in the same file.
+- Imports only from `minilaws`.
+
+A file with laws may only use the prelude, Python code and its own declarations. Put
+helper lemmas in your proofs file, but never a `def` or `inductive` that a law relies on.
 
 Anything else is rejected as `unsupported Python`. Rewrite the code into this shape. Don't
 move it out of the checked files.

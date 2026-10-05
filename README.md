@@ -8,11 +8,14 @@ You write ordinary Python, an AI is free to edit it, and the laws in `LAWS.laws`
 ## Usage
 
 ```
-pip install minilaws
+pip install git+https://github.com/luajapiassu/minilaws   # not on PyPI yet
 ```
 
 1. Ask your AI to write your app's rules in `LAWS.laws` and to prove them.
-2. Run `pytest` as usual. Every `LAWS.laws` that pytest collects becomes a test, so a CI that already runs your tests now enforces the laws too.
+2. Run `pytest` as usual. Every project with a `.laws` file that pytest collects becomes one test, so a CI that already runs your tests now enforces the laws too.
+3. Protect the laws in review (see [Who owns the laws](#who-owns-the-laws)).
+
+If your pytest config narrows collection (`testpaths`, `--ignore`), make sure it still reaches the `.laws` files, or run `minilaws check` in CI.
 
 You can also check without pytest:
 
@@ -25,13 +28,32 @@ No configuration is needed. minilaws checks:
 - every `*.laws` file;
 - every `.py` file that does `from minilaws import Nat`.
 
-File order doesn't matter: code is checked first, then laws, then proofs. To pick the files explicitly, add a `minilaws.toml` with `files = [...]`.
+File order doesn't matter: code is checked first, then laws, then proofs, and within each step a declaration comes after the ones it uses. To pick the files explicitly, add a `minilaws.toml` with `files = [...]`.
+
+A folder with its own `LAWS.laws` or `minilaws.toml` is a separate project: the parent's check skips it, and it gets its own test.
 
 Delete the `+ 1` in `examples/app.py`. The code still runs, but it's now wrong:
 
 ```
 REJECTED: proofs.laws: proof zero_add: type mismatch in 'cong succ ih'
 ```
+
+## Who owns the laws
+
+The laws are only worth something if the AI can't change what they say. minilaws closes the routes it can see:
+
+- A file that contains `law`s is human-owned. Its laws, `def`s and `inductive`s may use only the prelude, Python code (`.py`) and its own declarations. A law can't depend on something defined in `proofs.laws`, where the AI could change its meaning.
+- Python files may only import from `minilaws`, and may only call functions defined earlier in the same file, so the code that's checked is the code that runs.
+- Deleting or renaming `LAWS.laws` leaves its proofs without laws, which fails the check.
+
+What it can't see: someone editing `LAWS.laws` itself, removing a law together with its proof, or removing the `from minilaws import Nat` marker so a file stops being checked. Those are ordinary diffs, so guard them in review. On GitHub, a `CODEOWNERS` entry plus branch protection does it:
+
+```
+LAWS.laws        @you
+minilaws.toml    @you
+```
+
+With a `minilaws.toml`, the checked files are listed explicitly, so dropping the marker no longer takes a file out of the check.
 
 ## Syntax
 
@@ -63,9 +85,10 @@ def add(n: Nat, m: Nat) -> Nat:
 Supported:
 - Functions over `Nat`.
 - Structural recursion `f(..., m - 1, ...)` after `if m == 0`, with the other arguments unchanged.
-- Literals, `x + <int>`, and calls to earlier functions.
+- Literals, `x + <int>`, and calls to functions defined earlier in the same file.
+- Imports only from `minilaws`.
 
-Anything else is refused with `unsupported Python (...)`. `Nat = int`, and the laws speak about `n >= 0`.
+Anything else is refused with `unsupported Python (...)`, so a checked module holds only these functions: keep other code in modules that import them. `Nat = int`, and the laws speak about `n >= 0`.
 
 ## Optional: Claude Code plugin
 
@@ -76,7 +99,7 @@ This gives faster feedback during a session: Claude sees a broken law right afte
 /plugin install minilaws@minilaws
 ```
 
-It needs a `minilaws.toml` with `files` and `laws`. It blocks edits to the laws files, re-checks after every edit, and ships a skill with the usual proof patterns.
+Unlike pytest, the plugin needs a `minilaws.toml` with `files` and `laws`. It blocks edits to the laws files and to `minilaws.toml`, re-checks after every edit, and ships a skill with the usual proof patterns. If the hook itself fails (bad config, missing file), it rejects the edit rather than letting it through.
 
 Edits made through Bash aren't watched (see issue #3). The real enforcement is pytest/CI.
 
@@ -85,8 +108,14 @@ Edits made through Bash aren't watched (see issue #3). The real enforcement is p
 - Predicative universes (`Type 0 : Type 1`), and constructor fields must fit in `Type 0`, so there's no `Type : Type` paradox.
 - Inductive types must be strictly positive, and a definition can't call itself. Every term terminates, so there are no looping "proofs".
 - An unproved `law` isn't in scope, so it can't be used as a hypothesis.
-- The elaborator (implicit arguments) is **not trusted**. The kernel (`whnf`, `conv`, `infer`, `check`, recursor generation) re-checks its fully explicit output.
+- For proofs, the elaborator (implicit arguments) is **not trusted**. The kernel (`whnf`, `conv`, `infer`, `check`, recursor generation) re-checks its fully explicit output.
+- For law statements, the elaborator **is** trusted: the kernel checks that a statement is well-formed, not that it says what you wrote.
 - The Python translator **is** trusted, so keep its subset small.
+
+## Limitations
+
+- Recursors only eliminate into `Type 0`, so there is no large elimination: you can't prove that constructors differ (`zero ≠ succ n`) or other negative statements.
+- Unary `Nat`: a huge literal like `n + 5000` is rejected as too deep to check.
 
 ## Development
 

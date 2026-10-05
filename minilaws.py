@@ -1,14 +1,17 @@
 """minilaws: a tiny dependent-type proof checker (Curry-Howard), in the spirit of Bend's LAWS.bend.
 
 Types are statements, programs are proofs, type checking is proof checking.
-Kernel: Pi types, a predicative universe hierarchy (Type i : Type i+1), Nat with its
-recursor (= induction), and Eq with transport (Eq.subst). No general recursion, so every
-term terminates and the checker can't be fooled by a looping "proof".
+Kernel: Pi types, a predicative universe hierarchy (Type i : Type i+1), and strictly
+positive inductive types with generated recursors (= induction). Nat and Eq are ordinary
+inductives in the prelude. No general recursion, so every term terminates and the checker
+can't be fooled by a looping "proof".
 
 Two layers:
-  - elaborator (untrusted): fills in {implicit} arguments by unification;
+  - elaborator (untrusted for proofs): fills in {implicit} arguments by unification;
   - kernel (trusted): re-checks the fully explicit result. A buggy elaborator can only
-    cause rejections, never accept a wrong proof.
+    cause a proof to be rejected, never accepted. It does elaborate the *statements*
+    too, and the kernel only checks that a statement is well-formed, not that it says
+    what was written: for statements, the elaborator is trusted.
 
 File syntax:
     def name : T := t        -- definition (code)
@@ -24,7 +27,7 @@ import os
 import re
 import sys
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -33,6 +36,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Var:
     i: int
+    explicit: bool = field(default=False, compare=False)  # surface `@x`: pass x's implicits by hand
 
 @dataclass(frozen=True)
 class Sort:
@@ -82,7 +86,7 @@ class Stuck(Exception):
 def shift(t, d, cut=0):
     match t:
         case Var(i):
-            return Var(i + d) if i >= cut else t
+            return replace(t, i=i + d) if i >= cut else t
         case Pi(_, a, b) | Lam(_, a, b):
             return replace(t, dom=a and shift(a, d, cut), body=shift(b, d, cut + 1))
         case App(f, a):
@@ -499,7 +503,7 @@ class Env:
 
     def elab_app(self, ctx, t, expected):
         head, args = spine(t)
-        explicit = isinstance(head, Const) and head.name.startswith("@")
+        explicit = (isinstance(head, Const) and head.name.startswith("@")) or (isinstance(head, Var) and head.explicit)
         if isinstance(head, Const):
             name = head.name.lstrip("@")
             if name not in self.types:
@@ -710,13 +714,12 @@ class Parser:
             return Sort(int(self.eat()) if (self.peek() or "").isdigit() else 0)
         if t == "fun":
             return self.expr(scope)
-        if t is not None and t.startswith("@"):
-            return Const(self.eat())
-        n = self.name()
+        explicit = t is not None and t.startswith("@")
+        n = self.eat()[1:] if explicit else self.name()
         for i, s in enumerate(reversed(scope)):
             if s == n and s != "_":
-                return Var(i)
-        return Const(n)
+                return Var(i, explicit)
+        return Const("@" + n if explicit else n)
 
 
 def parse_expr(src):
@@ -791,20 +794,29 @@ def check_source(src, env=None):
 #         return STEP             # may call f(..., m - 1, ...) with the other args unchanged
 #
 # Expressions: parameters, int literals >= 0, `e + <int>`, `m - 1` (in STEP), calls to
-# earlier functions. Anything else is refused instead of guessed at.
+# functions defined earlier in the same file. Anything else is refused instead of guessed at.
+# Only `from minilaws import ...` is allowed: any other import could bind a name the checker
+# verifies to different code at runtime.
 
 Nat = int  # runtime type for the Python side; the laws speak about n >= 0
 RESERVED = KEYWORDS | {"Nat", "zero", "succ", "Eq", "refl"}
 
 
 def translate_python(src):
-    out = []
-    for node in ast.parse(src).body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)) or _is_docstring(node):
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        raise CheckError(f"line {e.lineno}: Python syntax error: {e.msg}") from None
+    out, defined = [], set()
+    for node in tree.body:
+        if _is_docstring(node) or (isinstance(node, ast.ImportFrom) and node.module == "minilaws" and not node.level):
             continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise _unsupported(node, "only `from minilaws import ...`")
         if not isinstance(node, ast.FunctionDef):
             raise _unsupported(node, "only function definitions")
-        out.append(_translate_fn(node))
+        out.append(_translate_fn(node, defined))
+        defined.add(node.name)
     return "\n".join(out) + "\n"
 
 
@@ -820,7 +832,7 @@ def _is_nat(ann):
     return isinstance(ann, ast.Name) and ann.id == "Nat"
 
 
-def _translate_fn(fn):
+def _translate_fn(fn, known):
     a = fn.args
     params = [p.arg for p in a.args]
     if a.vararg or a.kwarg or a.kwonlyargs or a.posonlyargs or a.defaults or fn.decorator_list:
@@ -834,14 +846,14 @@ def _translate_fn(fn):
         body = body[1:]
     match body:
         case [ast.Return(value=e)]:
-            expr = _py_expr(e, fn.name, params, None, "plain")
+            expr = _py_expr(e, fn.name, params, None, "plain", known)
         case [ast.If(test=test, body=[ast.Return(value=base)], orelse=orelse), *rest]:
             m = _zero_test(test, params)
             steps = orelse + rest
             if m is None or len(steps) != 1 or not isinstance(steps[0], ast.Return):
                 raise _unsupported(fn, "expected `if m == 0: return ...` then one `return ...`")
-            b = _py_expr(base, fn.name, params, m, "base")
-            s = _py_expr(steps[0].value, fn.name, params, m, "step")
+            b = _py_expr(base, fn.name, params, m, "base", known)
+            s = _py_expr(steps[0].value, fn.name, params, m, "step", known)
             expr = f"Nat.rec (fun _ => Nat) {b} (fun pred' ih' => {s}) {m}"
         case _:
             raise _unsupported(fn, "body must be `return e`, or `if m == 0: return e` then `return e`")
@@ -866,9 +878,9 @@ def _nat_literal(e):
     return isinstance(e, ast.Constant) and type(e.value) is int and e.value >= 0
 
 
-def _py_expr(e, fn, params, rec, mode):
+def _py_expr(e, fn, params, rec, mode, known):
     """mode: 'plain' (no recursion), 'base' (rec var is 0), 'step' (rec var is succ pred')."""
-    go = lambda x: _py_expr(x, fn, params, rec, mode)
+    go = lambda x: _py_expr(x, fn, params, rec, mode, known)
     if _nat_literal(e):
         return _succs("zero", e.value)
     match e:
@@ -889,8 +901,10 @@ def _py_expr(e, fn, params, rec, mode):
             if not ok:
                 raise _unsupported(e, f"recursion must be {fn}(..., m - 1, ...) after `if m == 0`, other arguments unchanged")
             return "ih'"
-        case ast.Call(func=ast.Name(id=f), args=args, keywords=[]):
+        case ast.Call(func=ast.Name(id=f), args=args, keywords=[]) if f in known:
             return "(" + " ".join([f] + [go(a) for a in args]) + ")"
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
+        raise _unsupported(e, f"`{e.func.id}` is not a function defined earlier in this file")
     raise _unsupported(e, "only parameters, literals, `x + <int>`, `m - 1` and function calls")
 
 
@@ -899,25 +913,85 @@ def read_source(path):
     return translate_python(text) if str(path).endswith(".py") else text
 
 
-# Code before laws before proofs, so file order doesn't matter. Stable within a phase.
 PHASE = {"inductive": 0, "def": 0, "law": 1, "theorem": 2, "proof": 2}
+
+
+def declared_names(decl):
+    kind, name, *payload = decl
+    if kind == "inductive":
+        return {name, f"{name}.rec"} | {c for c, _ in payload[2]}
+    return {name}  # for a proof: the law it makes usable
+
+
+def used_names(decl):
+    kind, name, *payload = decl
+    if kind == "inductive":
+        params, arity, ctors = payload
+        terms = [a for _, a, _ in params] + [arity] + [t for _, t in ctors]
+    else:
+        terms = [t for t in payload if t is not None]
+    return {x.name.lstrip("@") for t in terms for x, _ in subterms(t) if isinstance(x, Const)}
+
+
+def in_check_order(decls):
+    """Code, then laws, then proofs; within a phase, each declaration after the ones it
+    uses (file order otherwise). So the order of files never matters."""
+    out = []
+    for phase in (0, 1, 2):
+        todo = [(pd, used_names(pd[1]), declared_names(pd[1])) for pd in decls if PHASE[pd[1][0]] == phase]
+        here = set().union(*(ds for _, _, ds in todo))
+        done = set()
+        while todo:
+            # ponytail: O(n^2) scan, fine for hand-written files; a real toposort if projects get big
+            # no candidate means a cycle (e.g. self-reference): take the first, the checker rejects it
+            item = next((it for it in todo if (it[1] & here) - it[2] <= done), todo[0])
+            todo.remove(item)
+            out.append(item[0])
+            done |= item[2]
+    return out
+
+
+def foreign_use(decls):
+    """A file with laws is human-owned. Its laws, defs and types may use only the prelude,
+    Python code (.py) and its own declarations; anything defined in another .laws file
+    (editable by the AI) could change what the laws mean. Returns the first violation."""
+    origin = {n: Path(p) for p, d in decls if d[0] != "proof" for n in declared_names(d)}
+    homes = {Path(p) for p, d in decls if d[0] == "law"}
+    for path, d in decls:
+        if Path(path) not in homes or d[0] == "proof":
+            continue
+        for n in sorted(used_names(d)):
+            src = origin.get(n)  # None: prelude
+            if src is not None and src.suffix != ".py" and src != Path(path):
+                return f"{Path(path).name}: {d[0]} {d[1]}: uses '{n}' from {src.name}; " \
+                    "a file with laws may only use the prelude, .py code and its own declarations"
+    return None
 
 
 def check_files(paths):
     """Check a set of files. Returns (ok, message)."""
+    def in_file(path, e):
+        if isinstance(e, RecursionError):
+            e = "term too deep to check (a very large literal?)"
+        elif isinstance(e, OSError):
+            e = f"can't read it ({e.strerror})"
+        return CheckError(f"{Path(path).name}: {e}")
+
     env = Env()
     try:
         decls = []
         for path in paths:
             try:
                 decls += [(path, d) for d in parse_decls(read_source(path))]
-            except CheckError as e:
-                raise CheckError(f"{Path(path).name}: {e}") from None
-        for path, d in sorted(decls, key=lambda pd: PHASE[pd[1][0]]):
+            except (CheckError, RecursionError, OSError) as e:
+                raise in_file(path, e) from None
+        for path, d in in_check_order(decls):
             try:
                 add_decl(env, d)
-            except CheckError as e:
-                raise CheckError(f"{Path(path).name}: {e}") from None
+            except (CheckError, RecursionError) as e:
+                raise in_file(path, e) from None
+        if why := foreign_use(decls):
+            raise CheckError(why)
     except CheckError as e:
         return False, f"REJECTED: {e}"
     if env.laws:
@@ -925,8 +999,15 @@ def check_files(paths):
     return True, f"OK: {len(env.types) - env.prelude_size} declarations checked"
 
 
-SKIP_DIRS = {"node_modules", "__pycache__", "site-packages", "venv", "env", "build", "dist"}
+SKIP_DIRS = {"node_modules", "__pycache__", "site-packages", "build", "dist"}
+PROJECT_MARKERS = ("minilaws.toml", "LAWS.laws")
 CHECKED_PY = re.compile(r"^from minilaws import .*\bNat\b", re.M)
+
+
+def _skip_dir(d):
+    """Not part of this project: tooling dirs, virtualenvs, and nested projects (checked on their own)."""
+    return (d.name in SKIP_DIRS or d.name.startswith(".") or (d / "pyvenv.cfg").is_file()
+            or any((d / m).is_file() for m in PROJECT_MARKERS))
 
 
 def project_files(root):
@@ -938,7 +1019,7 @@ def project_files(root):
         return [root / f for f in tomllib.loads(config.read_text(encoding="utf-8")).get("files", [])]
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        dirnames[:] = sorted(d for d in dirnames if not _skip_dir(Path(dirpath) / d))
         for f in sorted(filenames):
             p = Path(dirpath) / f
             if f.endswith(".laws") or (f.endswith(".py") and CHECKED_PY.search(p.read_text(encoding="utf-8", errors="ignore"))):
