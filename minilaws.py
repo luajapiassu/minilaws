@@ -23,9 +23,13 @@ File syntax:
     @f a b                   -- pass f's implicit arguments explicitly
 """
 import ast
+import io
 import os
 import re
+import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -970,6 +974,15 @@ def foreign_use(decls):
 
 def check_files(paths):
     """Check a set of files. Returns (ok, message)."""
+    try:
+        env, _ = load_files(paths)
+    except CheckError as e:
+        return False, f"REJECTED: {e}"
+    return True, f"OK: {len(env.types) - env.prelude_size} declarations checked"
+
+
+def load_files(paths):
+    """Check a set of files; returns (env, [(path, decl)]). Raises CheckError."""
     def in_file(path, e):
         if isinstance(e, RecursionError):
             e = "term too deep to check (a very large literal?)"
@@ -978,25 +991,107 @@ def check_files(paths):
         return CheckError(f"{Path(path).name}: {e}")
 
     env = Env()
-    try:
-        decls = []
-        for path in paths:
-            try:
-                decls += [(path, d) for d in parse_decls(read_source(path))]
-            except (CheckError, RecursionError, OSError) as e:
-                raise in_file(path, e) from None
-        for path, d in in_check_order(decls):
-            try:
-                add_decl(env, d)
-            except (CheckError, RecursionError) as e:
-                raise in_file(path, e) from None
-        if why := foreign_use(decls):
-            raise CheckError(why)
-    except CheckError as e:
-        return False, f"REJECTED: {e}"
+    decls = []
+    for path in paths:
+        try:
+            decls += [(path, d) for d in parse_decls(read_source(path))]
+        except (CheckError, RecursionError, OSError) as e:
+            raise in_file(path, e) from None
+    for path, d in in_check_order(decls):
+        try:
+            add_decl(env, d)
+        except (CheckError, RecursionError) as e:
+            raise in_file(path, e) from None
+    if why := foreign_use(decls):
+        raise CheckError(why)
     if env.laws:
-        return False, "REJECTED: laws without proof: " + ", ".join(env.laws)
-    return True, f"OK: {len(env.types) - env.prelude_size} declarations checked"
+        raise CheckError("laws without proof: " + ", ".join(env.laws))
+    return env, decls
+
+
+# ---------- comparing against a trusted version (like Lean's comparator) ----------
+# The checker proves the code meets the laws; it can't tell whether the laws are still the
+# ones a human wrote. So, as Lean's `comparator` does with a challenge file, take the laws
+# from a version the change can't touch (a git ref, e.g. the base branch) and require each
+# one to mean the same thing now: same statement, same dependencies.
+
+def erase(t):
+    """A term without binder names or implicit flags: renaming a binder isn't a change."""
+    match t:
+        case Pi(_, a, b) | Lam(_, a, b):
+            return (type(t).__name__, a and erase(a), erase(b))
+        case App(f, a):
+            return ("App", erase(f), erase(a))
+    return t
+
+
+def law_specs(env, decls, root):
+    """{law: (statement, {dependency: what it is})}, dependencies taken transitively. A spec
+    def or type (from a .laws file) counts in full; code (.py) counts by signature and file,
+    because changing the code is the whole point. The prelude never changes."""
+    root = Path(root).resolve()
+    origin = {n: Path(p).resolve() for p, d in decls if d[0] != "proof" for n in declared_names(d)}
+    rel = lambda p: p.relative_to(root).as_posix() if p.is_relative_to(root) else p.name
+    ctors = {rec[: -len(".rec")]: list(info[3]) for rec, info in env.recursors.items()}
+    specs = {}
+    for _, (kind, name, *_) in decls:
+        if kind != "law":
+            continue
+        deps, todo = {}, [env.types[name]]
+        while todo:
+            for x, _ in subterms(todo.pop()):
+                if not isinstance(x, Const) or x.name in deps or x.name not in origin:
+                    continue
+                src = origin[x.name]
+                if src.suffix == ".py":
+                    deps[x.name] = ("code", rel(src), erase(env.types[x.name]))
+                    continue
+                deps[x.name] = ("spec", rel(src), erase(env.types[x.name]), erase(env.defs.get(x.name)))
+                todo += [env.types[x.name], env.defs.get(x.name, Sort(0))] + [Const(c) for c in ctors.get(x.name, [])]
+        specs[name] = (erase(env.types[name]), deps)
+    return specs
+
+
+def law_changes(base, head):
+    """What changed in the laws from base to head. New laws are fine: they only add duties."""
+    out = []
+    for name, (stmt, deps) in base.items():
+        if name not in head:
+            out.append(f"law {name}: removed")
+            continue
+        now_stmt, now_deps = head[name]
+        if now_stmt != stmt:
+            out.append(f"law {name}: statement changed")
+        for d in sorted(deps.keys() | now_deps.keys()):
+            was, now = deps.get(d), now_deps.get(d)
+            if was == now:
+                continue
+            if was and now and was[0] == now[0] == "code" and was[1] != now[1]:
+                out.append(f"law {name}: '{d}' now comes from {now[1]} (was {was[1]})")
+            else:
+                out.append(f"law {name}: '{d}' changed")
+    return out
+
+
+def project_at(ref, root):
+    """The project folder `root` as it is at git `ref`, extracted to a temp folder; None if
+    it didn't exist there. Raises CheckError if the ref can't be read."""
+    root = Path(root).resolve()
+    git = lambda cwd, *a: subprocess.run(["git", *a], cwd=cwd, capture_output=True, check=True).stdout
+    try:
+        git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        top = Path(git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve()
+    except (OSError, subprocess.CalledProcessError):
+        raise CheckError(f"can't read git ref {ref!r} in {root}") from None
+    tree = f"{ref}:{root.relative_to(top).as_posix()}".removesuffix(":.")
+    try:
+        data = git(top, "archive", tree)  # from top: in a subfolder, git archive keeps only that subfolder of `tree`
+    except subprocess.CalledProcessError:
+        return None  # the project is new since ref
+    out = Path(tempfile.mkdtemp(prefix="minilaws-"))
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        tar.extractall(out, filter="data")
+    return out
 
 
 SKIP_DIRS = {"node_modules", "__pycache__", "site-packages", "build", "dist"}
@@ -1027,11 +1122,30 @@ def project_files(root):
     return found
 
 
-def check_project(root="."):
+def check_project(root=".", against=None):
+    """Check the project under root. With `against` (a git ref), also require every law at
+    that ref to still hold with the same meaning; see law_changes."""
     files = project_files(root)
     if not any(str(f).endswith(".laws") for f in files):
         return False, f"REJECTED: no .laws files under {Path(root).resolve()}"
-    return check_files(files)
+    try:
+        env, decls = load_files(files)
+        n = len(env.types) - env.prelude_size
+        if against is None:
+            return True, f"OK: {n} declarations checked"
+        base_root = project_at(against, root)
+        base_files = project_files(base_root) if base_root else []
+        if not any(str(f).endswith(".laws") for f in base_files):
+            return True, f"OK: {n} declarations checked (no laws at {against} to compare)"
+        try:
+            base = law_specs(*load_files(base_files), base_root)
+        except CheckError as e:
+            raise CheckError(f"the version at {against} doesn't check, so it can't be the reference: {e}") from None
+        if changes := law_changes(base, law_specs(env, decls, root)):
+            raise CheckError(f"the laws differ from {against}; a human must approve this:\n  " + "\n  ".join(changes))
+    except CheckError as e:
+        return False, f"REJECTED: {e}"
+    return True, f"OK: {n} declarations checked, the {len(base)} laws at {against} unchanged"
 
 
 def main(paths):
@@ -1041,14 +1155,22 @@ def main(paths):
 
 
 def cli(argv=None):
-    """`minilaws check [dir]` checks a project; `minilaws FILE...` checks files in the given order."""
+    """`minilaws check [DIR] [--against REF]` checks a project; `minilaws FILE...` checks files."""
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["check"]:
-        ok, msg = check_project(argv[1] if len(argv) > 1 else ".")
+        args, against = argv[1:], None
+        if "--against" in args:
+            i = args.index("--against")
+            if i + 1 >= len(args):
+                print("--against needs a git ref, e.g. origin/main")
+                return 2
+            against = args[i + 1]
+            del args[i : i + 2]
+        ok, msg = check_project(args[0] if args else ".", against)
         print(msg)
         return 0 if ok else 1
     if not argv:
-        print("usage: minilaws check [DIR]  |  minilaws FILE...")
+        print("usage: minilaws check [DIR] [--against REF]  |  minilaws FILE...")
         return 2
     return main(argv)
 

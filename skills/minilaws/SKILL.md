@@ -20,6 +20,9 @@ law, or a proof no longer fits the code.
    or editing the laws or `minilaws.toml` through Bash).
 4. If you believe a law itself is wrong, stop and ask the user.
 
+If a check says `the laws differ from <ref>`, a law was changed, removed, or now depends on
+different code than in the trusted version. Undo that. Only the user can change the laws.
+
 Run the check by hand with `minilaws check` (or `python <plugin>/minilaws.py check`).
 
 ## Language

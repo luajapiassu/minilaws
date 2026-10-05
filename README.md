@@ -22,6 +22,7 @@ You can also check without pytest:
 ```
 minilaws check            # current directory
 minilaws check path/to/project
+minilaws check --against origin/main   # also: the laws are still the ones on main
 ```
 
 No configuration is needed. minilaws checks:
@@ -46,14 +47,34 @@ The laws are only worth something if the AI can't change what they say. minilaws
 - Python files may only import from `minilaws`, and may only call functions defined earlier in the same file, so the code that's checked is the code that runs.
 - Deleting or renaming `LAWS.laws` leaves its proofs without laws, which fails the check.
 
-What it can't see: someone editing `LAWS.laws` itself, removing a law together with its proof, or removing the `from minilaws import Nat` marker so a file stops being checked. Those are ordinary diffs, so guard them in review. On GitHub, a `CODEOWNERS` entry plus branch protection does it:
+The other route is changing the laws themselves: weakening one, or deleting a law together with its proof. Inside one version of the code that's invisible, since the weaker laws really are proved. So minilaws does what Lean's [`comparator`](https://github.com/leanprover/comparator) does with a challenge file: it takes the laws from a version the change can't touch and compares.
+
+```
+minilaws check --against origin/main
+```
+
+Every law at `origin/main` must still exist, with the same statement and the same dependencies, taken transitively. A `def` or `inductive` in a laws file must be identical. Code is compared by signature and by the file it comes from, because the code is what's allowed to change. Renaming a binder or editing comments isn't a change, and new laws are fine. Anything else is rejected:
+
+```
+REJECTED: the laws differ from origin/main; a human must approve this:
+  law add_assoc: removed
+```
+
+In CI, run it against the PR's base branch:
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- run: pip install git+https://github.com/luajapiassu/minilaws
+- run: minilaws check --against origin/${{ github.base_ref }}
+```
+
+When a law change is intentional, this step fails by design, and a human has to approve the change. Protect `LAWS.laws` and `minilaws.toml` with `CODEOWNERS` plus branch protection, so that approval comes from someone the AI isn't:
 
 ```
 LAWS.laws        @you
 minilaws.toml    @you
 ```
-
-With a `minilaws.toml`, the checked files are listed explicitly, so dropping the marker no longer takes a file out of the check.
 
 ## Syntax
 
