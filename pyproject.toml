@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minilaws"
+version = "0.1.0"
+description = "Proof-checked laws for AI-edited code: a tiny dependent-type checker in pure Python, inspired by Bend's LAWS.bend"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Lua Japiassu" }]
+keywords = ["proof-checking", "dependent-types", "verification", "ai-safety", "pytest"]
+classifiers = ["Framework :: Pytest", "Topic :: Software Development :: Testing"]
+
+[project.urls]
+Repository = "https://github.com/luajapiassu/minilaws"
+
+[project.scripts]
+minilaws = "minilaws:cli"
+
+[project.entry-points.pytest11]
+minilaws = "pytest_minilaws"
+
+[tool.setuptools]
+py-modules = ["minilaws", "pytest_minilaws"]

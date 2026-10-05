@@ -1,9 +1,14 @@
+import shutil
+import subprocess
+import sys
+import tempfile
 import textwrap
 from pathlib import Path
 
-from minilaws import CheckError, Const, Env, check_source, main, read_source, translate_python
+from minilaws import CheckError, Const, Env, check_project, check_source, main, read_source, translate_python
 
-EX = Path(__file__).parent / "examples"
+ROOT = Path(__file__).parent
+EX = ROOT / "examples"
 APP, LAWS, PROOFS = (read_source(EX / f) for f in ("app.py", "LAWS.laws", "proofs.laws"))
 
 ADD = "def add : Nat -> Nat -> Nat := fun n m => Nat.rec (fun _ => Nat) n (fun _ ih => succ ih) m\n"
@@ -231,6 +236,61 @@ def test_python_unsupported_is_rejected():
 
 def test_cli_checks_python_against_laws():
     assert main([str(EX / f) for f in ("app.py", "LAWS.laws", "proofs.laws")]) == 0
+
+
+# ---------- zero-config project check ----------
+
+def make_project(names=("app.py", "LAWS.laws", "proofs.laws")):
+    d = Path(tempfile.mkdtemp())
+    for src, dst in zip(("app.py", "LAWS.laws", "proofs.laws"), names):
+        shutil.copy(EX / src, d / dst)
+    return d
+
+
+def test_project_discovers_files_without_config():
+    d = make_project()
+    (d / "util.py").write_text("print('not checked: does not import Nat from minilaws')\n", encoding="utf-8")
+    (d / ".venv").mkdir()
+    (d / ".venv" / "junk.laws").write_text("garbage", encoding="utf-8")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
+def test_project_file_order_does_not_matter():
+    # alphabetically: proofs, then laws, then code -- the checker sorts declarations itself
+    d = make_project(names=("z_app.py", "m_LAWS.laws", "a_proofs.laws"))
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
+def test_project_failure_names_the_file():
+    d = make_project()
+    app = d / "app.py"
+    app.write_text(app.read_text(encoding="utf-8").replace("m - 1) + 1", "m - 1)"), encoding="utf-8")
+    ok, msg = check_project(d)
+    assert not ok and "proofs.laws" in msg and "type mismatch" in msg
+
+
+def test_project_toml_overrides_discovery():
+    d = make_project()
+    (d / "broken.laws").write_text("theorem nope : Eq zero (succ zero) := refl\n", encoding="utf-8")
+    (d / "minilaws.toml").write_text('files = ["app.py", "LAWS.laws", "proofs.laws"]\n', encoding="utf-8")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
+def test_project_without_laws_is_an_error():
+    ok, msg = check_project(Path(tempfile.mkdtemp()))
+    assert not ok and "no .laws files" in msg
+
+
+def test_cli_check_command():
+    good, bad = make_project(), make_project()
+    (bad / "proofs.laws").write_text("", encoding="utf-8")
+    run = lambda d: subprocess.run([sys.executable, str(ROOT / "minilaws.py"), "check", str(d)], capture_output=True, text=True)
+    assert run(good).returncode == 0
+    r = run(bad)
+    assert r.returncode == 1 and "without proof" in r.stdout
 
 
 if __name__ == "__main__":

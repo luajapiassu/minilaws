@@ -20,8 +20,10 @@ File syntax:
     @f a b                   -- pass f's implicit arguments explicitly
 """
 import ast
+import os
 import re
 import sys
+import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -725,10 +727,10 @@ def parse_expr(src):
     return e
 
 
-def check_source(src, env=None):
-    """Check every declaration; returns the Env. Raises CheckError on the first failure."""
-    env = env or Env()
+def parse_decls(src):
+    """Parse a source file into declarations: (kind, name, *payload)."""
     p = Parser(tokenize(src))
+    decls = []
     while p.peek() is not None:
         kind = p.eat()
         if kind not in DECLS:
@@ -748,10 +750,7 @@ def check_source(src, env=None):
                 cname = p.name()
                 p.eat(":")
                 ctors.append((cname, p.expr(scope)))
-            try:
-                env.add_inductive(name, params, arity, ctors)
-            except CheckError as e:
-                raise CheckError(f"inductive {name}: {e}") from None
+            decls.append((kind, name, params, arity, ctors))
             continue
         ty = body = None
         if kind != "proof":
@@ -760,10 +759,26 @@ def check_source(src, env=None):
         if kind != "law":
             p.eat(":=")
             body = p.expr([])
-        try:
-            env.add(kind, name, ty, body)
-        except CheckError as e:
-            raise CheckError(f"{kind} {name}: {e}") from None
+        decls.append((kind, name, ty, body))
+    return decls
+
+
+def add_decl(env, decl):
+    kind, name, *payload = decl
+    try:
+        if kind == "inductive":
+            env.add_inductive(name, *payload)
+        else:
+            env.add(kind, name, *payload)
+    except CheckError as e:
+        raise CheckError(f"{kind} {name}: {e}") from None
+
+
+def check_source(src, env=None):
+    """Check every declaration in order; returns the Env. Raises CheckError on the first failure."""
+    env = env or Env()
+    for decl in parse_decls(src):
+        add_decl(env, decl)
     return env
 
 
@@ -884,17 +899,58 @@ def read_source(path):
     return translate_python(text) if str(path).endswith(".py") else text
 
 
+# Code before laws before proofs, so file order doesn't matter. Stable within a phase.
+PHASE = {"inductive": 0, "def": 0, "law": 1, "theorem": 2, "proof": 2}
+
+
 def check_files(paths):
-    """Check files in order. Returns (ok, message)."""
+    """Check a set of files. Returns (ok, message)."""
     env = Env()
     try:
+        decls = []
         for path in paths:
-            check_source(read_source(path), env)
+            try:
+                decls += [(path, d) for d in parse_decls(read_source(path))]
+            except CheckError as e:
+                raise CheckError(f"{Path(path).name}: {e}") from None
+        for path, d in sorted(decls, key=lambda pd: PHASE[pd[1][0]]):
+            try:
+                add_decl(env, d)
+            except CheckError as e:
+                raise CheckError(f"{Path(path).name}: {e}") from None
     except CheckError as e:
         return False, f"REJECTED: {e}"
     if env.laws:
         return False, "REJECTED: laws without proof: " + ", ".join(env.laws)
     return True, f"OK: {len(env.types) - env.prelude_size} declarations checked"
+
+
+SKIP_DIRS = {"node_modules", "__pycache__", "site-packages", "venv", "env", "build", "dist"}
+CHECKED_PY = re.compile(r"^from minilaws import .*\bNat\b", re.M)
+
+
+def project_files(root):
+    """Files to check under root: minilaws.toml's `files` if present, else every *.laws
+    plus every .py that does `from minilaws import Nat` (the opt-in marker)."""
+    root = Path(root)
+    config = root / "minilaws.toml"
+    if config.is_file():
+        return [root / f for f in tomllib.loads(config.read_text(encoding="utf-8")).get("files", [])]
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for f in sorted(filenames):
+            p = Path(dirpath) / f
+            if f.endswith(".laws") or (f.endswith(".py") and CHECKED_PY.search(p.read_text(encoding="utf-8", errors="ignore"))):
+                found.append(p)
+    return found
+
+
+def check_project(root="."):
+    files = project_files(root)
+    if not any(str(f).endswith(".laws") for f in files):
+        return False, f"REJECTED: no .laws files under {Path(root).resolve()}"
+    return check_files(files)
 
 
 def main(paths):
@@ -903,5 +959,18 @@ def main(paths):
     return 0 if ok else 1
 
 
+def cli(argv=None):
+    """`minilaws check [dir]` checks a project; `minilaws FILE...` checks files in the given order."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["check"]:
+        ok, msg = check_project(argv[1] if len(argv) > 1 else ".")
+        print(msg)
+        return 0 if ok else 1
+    if not argv:
+        print("usage: minilaws check [DIR]  |  minilaws FILE...")
+        return 2
+    return main(argv)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(cli())
