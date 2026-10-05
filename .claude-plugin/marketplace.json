@@ -1,0 +1,14 @@
+{
+  "name": "minilaws",
+  "description": "Proof-checked laws for AI-edited code (Curry-Howard, in pure Python).",
+  "owner": {
+    "name": "Lua Japiassu"
+  },
+  "plugins": [
+    {
+      "name": "minilaws",
+      "source": "./",
+      "description": "Proof-checked laws for AI-edited code."
+    }
+  ]
+}

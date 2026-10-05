@@ -1,0 +1,26 @@
+-- Equality lemmas, all derived from Eq.subst (transport).
+theorem cong : {A B : Type 0} -> {a b : A} -> (f : A -> B) -> Eq a b -> Eq (f a) (f b) :=
+  fun {A B a b} f h => Eq.subst (fun x => Eq (f a) (f x)) h refl
+theorem symm : {A : Type 0} -> {a b : A} -> Eq a b -> Eq b a :=
+  fun {A a b} h => Eq.subst (fun x => Eq x a) h refl
+theorem trans : {A : Type 0} -> {a b c : A} -> Eq a b -> Eq b c -> Eq a c :=
+  fun {A a b c} h1 h2 => Eq.subst (fun x => Eq a x) h2 h1
+
+-- By computation: add n zero reduces to n.
+proof add_zero := fun n => refl
+
+-- Induction = Nat.rec with a motive (the statement for each k).
+proof zero_add := fun n =>
+  Nat.rec (fun k => Eq (add zero k) k) refl (fun k ih => cong succ ih) n
+
+proof succ_add := fun a b =>
+  Nat.rec (fun k => Eq (add (succ a) k) (succ (add a k))) refl (fun k ih => cong succ ih) b
+
+proof add_comm := fun a b =>
+  Nat.rec (fun k => Eq (add a k) (add k a))
+    (symm (zero_add a))
+    (fun k ih => trans (cong succ ih) (symm (succ_add k a)))
+    b
+
+proof add_assoc := fun a b c =>
+  Nat.rec (fun k => Eq (add (add a b) k) (add a (add b k))) refl (fun k ih => cong succ ih) c

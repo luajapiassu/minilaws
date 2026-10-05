@@ -1,0 +1,6 @@
+-- Human-owned. Every law here must have a proof, or the build is rejected.
+law add_zero : (n : Nat) -> Eq (add n zero) n
+law zero_add : (n : Nat) -> Eq (add zero n) n
+law succ_add : (a b : Nat) -> Eq (add (succ a) b) (succ (add a b))
+law add_comm : (a b : Nat) -> Eq (add a b) (add b a)
+law add_assoc : (a b c : Nat) -> Eq (add (add a b) c) (add a (add b c))

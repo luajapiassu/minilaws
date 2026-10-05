@@ -1,0 +1,2 @@
+files = ["app.py", "LAWS.laws", "proofs.laws"]
+laws = ["LAWS.laws"]
