@@ -13,7 +13,6 @@ error, so a crash would otherwise let the edit through unchecked.
 """
 import hashlib
 import json
-import os
 import re
 import sys
 import tempfile
@@ -33,13 +32,7 @@ def find_root(start):
 def projects_near(cwd):
     """The project cwd is in, plus every project below it."""
     # ponytail: walks cwd on every Bash call; cache the project list if big repos make it slow
-    roots = {find_root(cwd)} - {None}
-    for dirpath, dirnames, filenames in os.walk(cwd):
-        if any(m in filenames for m in PROJECT_MARKERS):
-            roots.add(Path(dirpath))
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
-                       and not (Path(dirpath) / d / "pyvenv.cfg").is_file()]
-    return roots
+    return ({find_root(cwd)} | {find_root(d) or d for d in laws_dirs(cwd)}) - {None}
 
 
 def has_laws(path):
@@ -125,7 +118,7 @@ if __name__ == "__main__":
     try:
         # imported here so a broken install also fails closed
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from minilaws import PROJECT_MARKERS, SKIP_DIRS, CheckError, check_project, parse_decls, project_files
+        from minilaws import PROJECT_MARKERS, CheckError, check_project, laws_dirs, parse_decls, project_files
         code = main(sys.argv[1])
     except Exception as e:
         print(f"minilaws hook failed ({type(e).__name__}: {e}); treating the edit as rejected. "

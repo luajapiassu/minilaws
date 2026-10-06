@@ -49,6 +49,9 @@ def test_weakened_law_is_rejected():
     edit(d / "proofs.laws", "proof add_comm := fun a b =>", "proof add_comm := fun a => symm (zero_add a)\ntheorem old_comm : (a b : Nat) -> Eq (add a b) (add b a) := fun a b =>")
     ok, msg = against_head(d)
     assert not ok and "add_comm" in msg and "statement changed" in msg, msg
+    # the human approving it sees both statements, as the kernel reads them (#5, #9)
+    assert "was: (a : Nat) -> (b : Nat) -> Eq Nat (add a b) (add b a)" in msg, msg
+    assert "now: (a : Nat) -> Eq Nat (add a zero) (add zero a)" in msg, msg
 
 
 def test_removed_law_is_rejected():
