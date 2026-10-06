@@ -1,4 +1,4 @@
-"""minilaws: a tiny dependent-type proof checker (Curry-Howard), in the spirit of Bend's LAWS.bend.
+"""minilaws: a tiny dependent-type proof checker (Curry-Howard) for AI-edited code.
 
 Types are statements, programs are proofs, type checking is proof checking.
 Kernel: Pi types, a predicative universe hierarchy (Type i : Type i+1), and strictly

@@ -1,9 +1,15 @@
 # minilaws
 
-A dependent-type proof checker in one pure-Python file (stdlib only), inspired by Bend's [`LAWS.bend`](https://github.com/HigherOrderCO/Bend).
 **Types are statements, programs are proofs, and type checking is proof checking** (Curry-Howard).
+minilaws applies this to AI-edited code, with a dependent-type proof checker in one pure-Python file (stdlib only).
 
 You write ordinary Python, an AI is free to edit it, and the laws in `LAWS.laws` must keep holding. If an edit breaks a law, your tests fail.
+
+## The strategy
+
+It's the approach of OpenAI's Navier-Stokes announcement, scaled down: let the AI do the work, and make checking that work cheap. There, a [swarm of agents](https://explainx.ai/blog/openai-navier-stokes-solution-agent-swarm-2026) produced the proof, and a Lean 4 formalization of it was checked in [17 hours](https://explainx.ai/blog/lean-4-formal-proof-cost-collapse-navier-stokes-2026). Checking it by hand was estimated at about 132,800 human-hours. Here, the AI writes the code and the proofs, and a small kernel checks them on every test run.
+
+A kernel can't check one thing: whether the statement is the right one. For that, minilaws follows the [Lean proof of Fermat's Last Theorem built with Claude](https://explainx.ai/blog/anthropic-claude-fermats-last-theorem-lean-proof-2026). There, the canonical statement was fixed in advance, and Lean's [`comparator`](https://github.com/leanprover/comparator) required the proved theorem to be identical to it. Here, a human owns `LAWS.laws`, and `minilaws check --against origin/main` requires every law to still mean what it meant on `main`.
 
 ## Usage
 
@@ -149,11 +155,10 @@ python -m venv .venv && .venv/Scripts/pip install -e . pytest   # Windows; use .
 
 ## References
 
-- [Bend](https://github.com/HigherOrderCO/Bend): the `LAWS.bend` idea (laws a human writes, proofs the AI must keep valid) that minilaws ports to Python.
+- [OpenAI's Navier-Stokes proof and its Lean 4 formalization](https://explainx.ai/blog/lean-4-formal-proof-cost-collapse-navier-stokes-2026): proof written by AI, checking made cheap by a kernel (17 machine-hours against an estimated 132,800 human-hours). It also names the gap left open: a kernel proves that the proof follows from the statement, not that the statement is the right one. See also the [agent swarm](https://explainx.ai/blog/openai-navier-stokes-solution-agent-swarm-2026) behind it. The result itself is disputed.
+- [Claude's Fermat's Last Theorem Lean proof](https://explainx.ai/blog/anthropic-claude-fermats-last-theorem-lean-proof-2026): closes that gap with a fixed statement, `comparator`, an axiom check, and human review of the statement.
 - [Lean's `comparator`](https://github.com/leanprover/comparator): checks a solution against a challenge file the author controls (identical statements, including dependencies, plus permitted axioms). It's the model for `check --against`.
-- [Claude's Fermat's Last Theorem Lean proof](https://explainx.ai/blog/anthropic-claude-fermats-last-theorem-lean-proof-2026): comparator in practice, with human review of the statement on top of the kernel check.
-- [Formal proof cost collapse (Navier-Stokes in Lean 4)](https://explainx.ai/blog/lean-4-formal-proof-cost-collapse-navier-stokes-2026): states the gap minilaws has to close: a kernel proves the proof follows from the statement, not that the statement is the right one.
-- [Bend 2 overview](https://akitaonrails.com/en/2026/09/19/new-ai-language-just-released-bend-2/): the `LAWS.bend` / `PROOF.bend` workflow, which assumes the laws file stays human-written.
+- [Bend](https://github.com/HigherOrderCO/Bend): a language with a `LAWS.bend` file (laws a human writes, proofs the AI must keep valid), the same split as `LAWS.laws` and its proofs.
 
 ## License
 
