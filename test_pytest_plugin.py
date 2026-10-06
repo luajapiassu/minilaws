@@ -59,3 +59,15 @@ def test_against_option_catches_a_removed_law():
     assert pytest_in(d).returncode == 0
     r = pytest_in(d, "--minilaws-against=HEAD")
     assert r.returncode == 1 and "law add_assoc: removed" in r.stdout, r.stdout
+
+
+def test_warns_when_testpaths_skip_the_laws():
+    # otherwise narrowing collection silently turns the laws off
+    d = project()
+    (d / "tests").mkdir()
+    (d / "tests" / "test_ok.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    (d / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n", encoding="utf-8")
+    env = os.environ | {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": str(ROOT)}
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "pytest_minilaws"],
+                       capture_output=True, text=True, cwd=d, env=env)
+    assert r.returncode == 0 and "laws not collected" in r.stdout and d.name in r.stdout, r.stdout

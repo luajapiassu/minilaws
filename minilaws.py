@@ -1026,7 +1026,7 @@ def erase(t):
 
 
 def law_specs(env, decls, root):
-    """{law: (statement, {dependency: what it is})}, dependencies taken transitively. A spec
+    """{law: (statement, {dependency: what it is}, statement as printed)}, dependencies taken transitively. A spec
     def or type (from a .laws file) counts in full; code (.py) counts by signature and file,
     because changing the code is the whole point. The prelude never changes."""
     root = Path(root).resolve()
@@ -1048,20 +1048,21 @@ def law_specs(env, decls, root):
                     continue
                 deps[x.name] = ("spec", rel(src), erase(env.types[x.name]), erase(env.defs.get(x.name)))
                 todo += [env.types[x.name], env.defs.get(x.name, Sort(0))] + [Const(c) for c in ctors.get(x.name, [])]
-        specs[name] = (erase(env.types[name]), deps)
+        specs[name] = (erase(env.types[name]), deps, show(env.types[name]))
     return specs
 
 
 def law_changes(base, head):
     """What changed in the laws from base to head. New laws are fine: they only add duties."""
     out = []
-    for name, (stmt, deps) in base.items():
+    for name, (stmt, deps, shown) in base.items():
         if name not in head:
             out.append(f"law {name}: removed")
             continue
-        now_stmt, now_deps = head[name]
+        now_stmt, now_deps, now_shown = head[name]
         if now_stmt != stmt:
-            out.append(f"law {name}: statement changed")
+            # as elaborated (implicits filled in): what the kernel will hold the code to
+            out.append(f"law {name}: statement changed\n    was: {shown}\n    now: {now_shown}")
         for d in sorted(deps.keys() | now_deps.keys()):
             was, now = deps.get(d), now_deps.get(d)
             if was == now:
@@ -1099,10 +1100,21 @@ PROJECT_MARKERS = ("minilaws.toml", "LAWS.laws")
 CHECKED_PY = re.compile(r"^from minilaws import .*\bNat\b", re.M)
 
 
+def _tooling_dir(d):
+    return d.name in SKIP_DIRS or d.name.startswith(".") or (d / "pyvenv.cfg").is_file()
+
+
 def _skip_dir(d):
     """Not part of this project: tooling dirs, virtualenvs, and nested projects (checked on their own)."""
-    return (d.name in SKIP_DIRS or d.name.startswith(".") or (d / "pyvenv.cfg").is_file()
-            or any((d / m).is_file() for m in PROJECT_MARKERS))
+    return _tooling_dir(d) or any((d / m).is_file() for m in PROJECT_MARKERS)
+
+
+def laws_dirs(root):
+    """Every folder under root holding a .laws file or a project marker."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not _tooling_dir(Path(dirpath) / d))
+        if any(f.endswith(".laws") or f in PROJECT_MARKERS for f in filenames):
+            yield Path(dirpath)
 
 
 def project_files(root):
