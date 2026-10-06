@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minilaws"
 version = "0.1.0"
-description = "Proof-checked laws for AI-edited code: a tiny dependent-type checker in pure Python, inspired by Bend's LAWS.bend"
+description = "Curry-Howard for AI-edited Python: the AI writes code and proofs, a tiny kernel checks them, the laws stay human-owned"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
