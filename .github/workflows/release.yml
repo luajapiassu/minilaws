@@ -1,0 +1,22 @@
+# Publishes to PyPI on a `v*` tag, via trusted publishing (no token stored here).
+# PyPI side: a publisher for owner luajapiassu, repo minilaws, workflow release.yml, environment pypi.
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e . pytest build && python -m pytest -q
+      - name: tag must match the version in pyproject.toml
+        run: test "v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$GITHUB_REF_NAME"
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
