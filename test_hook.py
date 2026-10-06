@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 HOOK = ROOT / "hooks" / "hook.py"
-CONFIG = 'files = ["app.py", "LAWS.laws", "proofs.laws"]\nlaws = ["LAWS.laws"]\n'
+CONFIG = 'files = ["app.py", "LAWS.laws", "proofs.laws"]\n'
 
 
 def project(config=CONFIG):
@@ -19,16 +19,85 @@ def project(config=CONFIG):
     return d
 
 
-def run(mode, d, file_path, tool="Edit"):
-    event = {"hook_event_name": mode, "cwd": str(d), "tool_name": tool, "tool_input": {"file_path": file_path}}
+def run(mode, d, file_path=None, tool="Edit"):
+    tool_input = {"file_path": file_path} if file_path else {"command": "sed -i ..."}
+    event = {"hook_event_name": mode, "cwd": str(d), "tool_name": tool, "tool_input": tool_input,
+             "session_id": "s", "tool_use_id": f"t-{d.name}"}
     r = subprocess.run([sys.executable, str(HOOK), mode], input=json.dumps(event), capture_output=True, text=True)
     return r.returncode, r.stderr
 
 
-def test_no_config_is_a_noop():
-    d = project(config=None)
+def test_no_project_is_a_noop():
+    d = Path(tempfile.mkdtemp())
     (d / "app.py").write_text("garbage(", encoding="utf-8")
     assert run("post", d, str(d / "app.py")) == (0, "")
+
+
+def test_zero_config_pre_blocks_editing_laws():
+    # LAWS.laws marks a project, like for `minilaws check` and pytest
+    d = project(config=None)
+    code, err = run("pre", d, str(d / "LAWS.laws"))
+    assert code == 2 and "human-owned" in err
+
+
+def test_zero_config_post_reports_broken_law():
+    d = project(config=None)
+    app = d / "app.py"
+    app.write_text(app.read_text(encoding="utf-8").replace("m - 1) + 1", "m - 1)"), encoding="utf-8")
+    code, err = run("post", d, str(app))
+    assert code == 2 and "type mismatch" in err
+
+
+def test_pre_blocks_any_file_with_laws():
+    # the checker treats every file with a `law` as human-owned; so does the hook
+    d = project(config=None)
+    (d / "more.laws").write_text("law z : Eq zero zero\n", encoding="utf-8")
+    code, err = run("pre", d, str(d / "more.laws"))
+    assert code == 2 and "human-owned" in err
+
+
+def test_pre_allows_editing_proofs():
+    d = project(config=None)
+    assert run("pre", d, str(d / "proofs.laws"))[0] == 0
+
+
+def bash(d, change):
+    """Run the Bash hooks around `change`, the way Claude Code would."""
+    assert run("pre", d, tool="Bash")[0] == 0
+    change()
+    return run("post", d, tool="Bash")
+
+
+def test_bash_editing_laws_is_reported():
+    # issue #3: hooks see the effect of a Bash command, not its text
+    d = project(config=None)
+    law = d / "LAWS.laws"
+    code, err = bash(d, lambda: law.write_text(law.read_text(encoding="utf-8") + "-- weaker\n", encoding="utf-8"))
+    assert code == 2 and "LAWS.laws" in err and "human-owned" in err
+
+
+def test_bash_breaking_code_is_reported():
+    d = project(config=None)
+    app = d / "app.py"
+    code, err = bash(d, lambda: app.write_text(
+        app.read_text(encoding="utf-8").replace("m - 1) + 1", "m - 1)"), encoding="utf-8"))
+    assert code == 2 and "type mismatch" in err
+
+
+def test_bash_finds_projects_below_cwd():
+    root = Path(tempfile.mkdtemp())
+    d = project(config=None)
+    shutil.move(d, root / "sub")
+    law = root / "sub" / "LAWS.laws"
+    code, err = bash(root, lambda: law.unlink())
+    assert code == 2 and "LAWS.laws" in err
+
+
+def test_bash_without_changes_passes_even_if_a_human_edited_laws_before():
+    d = project(config=None)
+    law = d / "LAWS.laws"
+    law.write_text(law.read_text(encoding="utf-8") + "-- human note\n", encoding="utf-8")
+    assert bash(d, lambda: None) == (0, "")
 
 
 def test_pre_blocks_editing_laws():

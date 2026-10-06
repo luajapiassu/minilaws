@@ -66,20 +66,25 @@ REJECTED: the laws differ from origin/main; a human must approve this:
   law add_assoc: removed
 ```
 
-In CI, run it against the PR's base branch. The pytest plugin doesn't take `--against` yet ([#8](https://github.com/luajapiassu/minilaws/issues/8)), so it's a separate step:
+In CI, run it against the PR's base branch, through pytest or the CLI:
 
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- run: pip install minilaws
-- run: minilaws check --against origin/${{ github.base_ref }}
+- run: pip install minilaws==0.1.0
+- run: pytest --minilaws-against=origin/${{ github.base_ref }}   # or: minilaws check --against ...
 ```
 
-When a law change is intentional, this step fails by design, and a human has to approve the change. Protect `LAWS.laws` and `minilaws.toml` with `CODEOWNERS` plus branch protection, so that approval comes from someone the AI isn't. Other ways to approve are in [#5](https://github.com/luajapiassu/minilaws/issues/5). For example:
+`MINILAWS_AGAINST=origin/main` does the same as the pytest option.
+
+Like comparator, the check must run somewhere the change can't reach. Pin the version you install from PyPI, so the checker isn't the one in the PR. Protect the workflow file too: a PR that edits it could drop the step.
+
+When a law change is intentional, this step fails by design, and a human has to approve the change. That human approval is the whole mechanism, as in Lean projects: protect `LAWS.laws`, `minilaws.toml` and `.github/` with `CODEOWNERS` plus branch protection, so that approval comes from someone the AI isn't. The discussion is in [#5](https://github.com/luajapiassu/minilaws/issues/5). For example:
 
 ```
 LAWS.laws        @you
 minilaws.toml    @you
+/.github/        @you
 ```
 
 ## Syntax
@@ -126,9 +131,9 @@ This gives faster feedback during a session: Claude sees a broken law right afte
 /plugin install minilaws@minilaws
 ```
 
-Unlike pytest, the plugin needs a `minilaws.toml` with `files` and `laws`. It blocks edits to the laws files and to `minilaws.toml`, re-checks after every edit, and ships a skill with the usual proof patterns. If the hook itself fails (bad config, missing file), it rejects the edit rather than letting it through.
+It finds projects like `minilaws check` does, with no configuration. It blocks edits to every file with a `law` and to `minilaws.toml`, re-checks after every edit, and ships a skill with the usual proof patterns. If the hook itself fails (bad config, missing file), it rejects the edit rather than letting it through.
 
-Edits made through Bash aren't watched during the session ([#3](https://github.com/luajapiassu/minilaws/issues/3)). The real enforcement is pytest/CI: `minilaws check --against` catches a changed law however it was edited.
+Bash commands are watched by their effect, not their text: the hook records the project files before the command and compares after it. A command that changed a laws file is reported to Claude, and any other change re-checks the proofs. A Bash command can't be blocked before it runs, so the change is already on disk when Claude hears about it. The real enforcement stays in pytest/CI, where `--against` catches a changed law however it was edited.
 
 ## Why the guarantee holds
 

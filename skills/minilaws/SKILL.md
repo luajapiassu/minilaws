@@ -6,8 +6,9 @@ description: Write and repair laws and proofs for minilaws, a proof checker for 
 # minilaws
 
 The project's **laws** (`LAWS.laws`) are statements its code must always satisfy. They are
-**human-owned**: a hook blocks you from editing them and `minilaws.toml`. After every edit to a file listed in
-`minilaws.toml`, a hook re-checks every proof. If it reports `REJECTED`, your change broke a
+**human-owned**: a hook blocks you from editing any file with a `law` and `minilaws.toml`, and
+reports it if a Bash command changes them. After every edit to a checked file, a hook re-checks
+every proof. If it reports `REJECTED`, your change broke a
 law, or a proof no longer fits the code.
 
 ## When the hook rejects an edit
@@ -17,7 +18,7 @@ law, or a proof no longer fits the code.
    code is right, but it now computes differently).
 3. Fix the code or the proof. **Never** weaken a law, and never route around the check (for
    example, by deleting the `from minilaws import Nat` marker, moving code into a `.laws` file,
-   or editing the laws or `minilaws.toml` through Bash).
+   or editing the laws or `minilaws.toml` through Bash: the hook sees that too).
 4. If you believe a law itself is wrong, stop and ask the user.
 
 If a check says `the laws differ from <ref>`, a law was changed, removed, or now depends on
@@ -66,7 +67,7 @@ Built-ins: `Nat` (`zero`, `succ`, `Nat.rec`), `Eq a b` (`refl`, `Eq.rec`, `Eq.su
 - Write a lambda's binder type when inference can't see it, for example
   `fun (l : List Nat) => ...`.
 
-## Python subset (`.py` files in `minilaws.toml`)
+## Python subset (`.py` files with `from minilaws import Nat`)
 
 These functions are checked, and they also run as normal Python:
 

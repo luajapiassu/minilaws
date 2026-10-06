@@ -1,6 +1,9 @@
 """pytest plugin (auto-loaded once minilaws is installed): every project with a .laws file
 that pytest collects becomes one test that checks all its proofs. Any .laws file counts,
-not only LAWS.laws, so deleting or renaming LAWS.laws leaves proofs without laws: a failure."""
+not only LAWS.laws, so deleting or renaming LAWS.laws leaves proofs without laws: a failure.
+With --minilaws-against REF (or MINILAWS_AGAINST), the laws must also be unchanged from REF."""
+import os
+
 import pytest
 
 from minilaws import PROJECT_MARKERS, check_project
@@ -10,6 +13,11 @@ ROOTS = pytest.StashKey[set]()
 
 class LawsBroken(Exception):
     pass
+
+
+def pytest_addoption(parser):
+    parser.addoption("--minilaws-against", metavar="REF", default=os.environ.get("MINILAWS_AGAINST") or None,
+                     help="git ref whose laws must still hold unchanged, e.g. origin/main (env: MINILAWS_AGAINST)")
 
 
 def project_root(file_path, rootpath):
@@ -40,7 +48,7 @@ class LawsFile(pytest.File):
 
 class LawsItem(pytest.Item):
     def runtest(self):
-        ok, msg = check_project(project_root(self.path, self.config.rootpath))
+        ok, msg = check_project(project_root(self.path, self.config.rootpath), self.config.getoption("minilaws_against"))
         if not ok:
             raise LawsBroken(msg)
 

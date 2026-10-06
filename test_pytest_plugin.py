@@ -17,10 +17,10 @@ def project():
     return d
 
 
-def pytest_in(d):
+def pytest_in(d, *args):
     env = os.environ | {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": str(ROOT)}
     return subprocess.run(
-        [sys.executable, "-m", "pytest", str(d), "-q", "-p", "no:cacheprovider", "-p", "pytest_minilaws"],
+        [sys.executable, "-m", "pytest", str(d), "-q", "-p", "no:cacheprovider", "-p", "pytest_minilaws", *args],
         capture_output=True, text=True, cwd=d, env=env,
     )
 
@@ -44,3 +44,18 @@ def test_deleting_the_laws_file_fails_pytest():
     (d / "LAWS.laws").unlink()
     r = pytest_in(d)
     assert r.returncode == 1 and "no such law" in r.stdout, r.stdout
+
+
+def test_against_option_catches_a_removed_law():
+    # without it, deleting a law together with its proof still passes: the rest is proved
+    d = project()
+    git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, check=True, capture_output=True)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    for f, cut in (("LAWS.laws", "law add_assoc"), ("proofs.laws", "proof add_assoc")):
+        text = (d / f).read_text(encoding="utf-8")
+        (d / f).write_text(text[: text.index(cut)], encoding="utf-8")
+    assert pytest_in(d).returncode == 0
+    r = pytest_in(d, "--minilaws-against=HEAD")
+    assert r.returncode == 1 and "law add_assoc: removed" in r.stdout, r.stdout
