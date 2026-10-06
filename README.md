@@ -21,7 +21,7 @@ pip install minilaws
 2. Run `pytest` as usual. Every project with a `.laws` file that pytest collects becomes one test, so a CI that already runs your tests now enforces the laws too.
 3. Protect the laws in review (see [Who owns the laws](#who-owns-the-laws)).
 
-If your pytest config narrows collection (`testpaths`, `--ignore`), make sure it still reaches the `.laws` files, or run `minilaws check` in CI.
+If your pytest config narrows collection (`testpaths`, `--ignore`) so that a project's `.laws` files aren't collected, pytest prints `minilaws: laws not collected` with the project's folder. Widen the collection, or run `minilaws check` in CI.
 
 You can also check without pytest:
 
@@ -63,8 +63,13 @@ Every law at `origin/main` must still exist, with the same statement and the sam
 
 ```
 REJECTED: the laws differ from origin/main; a human must approve this:
+  law add_comm: statement changed
+    was: (a : Nat) -> (b : Nat) -> Eq Nat (add a b) (add b a)
+    now: (a : Nat) -> Eq Nat (add a zero) (add zero a)
   law add_assoc: removed
 ```
+
+A changed statement is printed as the kernel reads it, with the implicit arguments filled in (`Eq Nat`). That's what the human approves, so a surprise from the elaborator shows up here.
 
 In CI, run it against the PR's base branch, through pytest or the CLI:
 
@@ -133,7 +138,7 @@ This gives faster feedback during a session: Claude sees a broken law right afte
 
 It finds projects like `minilaws check` does, with no configuration. It blocks edits to every file with a `law` and to `minilaws.toml`, re-checks after every edit, and ships a skill with the usual proof patterns. If the hook itself fails (bad config, missing file), it rejects the edit rather than letting it through.
 
-Bash commands are watched by their effect, not their text: the hook records the project files before the command and compares after it. A command that changed a laws file is reported to Claude, and any other change re-checks the proofs. A Bash command can't be blocked before it runs, so the change is already on disk when Claude hears about it. The real enforcement stays in pytest/CI, where `--against` catches a changed law however it was edited.
+Bash commands are watched by their effect, not their text: the hook records the project files before the command and compares after it. A command that changed a laws file is reported to Claude, and any other change re-checks the proofs. A Bash command can't be blocked before it runs, so the change is already on disk when Claude hears about it. The record lives in the temp folder, so a deliberate command could tamper with it. The real enforcement stays in pytest/CI, where `--against` catches a changed law however it was edited.
 
 ## Why the guarantee holds
 
@@ -142,7 +147,7 @@ Bash commands are watched by their effect, not their text: the hook records the 
 - An unproved `law` isn't in scope, so it can't be used as a hypothesis.
 - For proofs, the elaborator (implicit arguments) is **not trusted**. The kernel (`whnf`, `conv`, `infer`, `check`, recursor generation) re-checks its fully explicit output.
 - For law statements, the elaborator **is** trusted: the kernel checks that a statement is well-formed, not that it says what you wrote.
-- The Python translator **is** trusted, so keep its subset small.
+- The Python translator **is** trusted, so keep its subset small. A differential test runs translated functions in the kernel and in Python and requires the same results.
 
 ## Limitations
 

@@ -3,9 +3,10 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from itertools import product
 from pathlib import Path
 
-from minilaws import CheckError, Const, Env, check_project, check_source, main, read_source, translate_python
+from minilaws import App, CheckError, Const, Env, apply, check_project, check_source, main, read_source, translate_python
 
 ROOT = Path(__file__).parent
 EX = ROOT / "examples"
@@ -184,6 +185,49 @@ def test_python_calls_other_functions():
             return add(n, n)
         """)
     check_source(translate_python(src) + "theorem t : Eq (double (succ zero)) (succ (succ zero)) := refl")
+
+
+TRANSLATED = PY_ADD + py("""
+    def mul(n: Nat, m: Nat) -> Nat:
+        if m == 0:
+            return 0
+        return add(mul(n, m - 1), n)
+
+    def pow2(m: Nat) -> Nat:
+        if m == 0:
+            return 1
+        return add(pow2(m - 1), pow2(m - 1))
+
+    def pred(m: Nat) -> Nat:
+        if m == 0:
+            return m
+        return m - 1
+
+    def tri(m: Nat) -> Nat:
+        if m == 0:
+            return m + 2
+        return add(tri(m - 1), m)
+
+    def poly(a: Nat, b: Nat) -> Nat:
+        return add(mul(a, a + 1), pred(b) + 3)
+    """)
+
+
+def test_translation_computes_what_python_computes():
+    # The translator is trusted, so test it differentially: the kernel, used as an
+    # interpreter, must agree with the Python that actually runs.
+    env = check_source(translate_python(TRANSLATED))
+    ns = {}
+    exec(TRANSLATED, ns)
+    nat = lambda k: Const("zero") if k == 0 else App(Const("succ"), nat(k - 1))
+
+    def value(t):
+        t = env.whnf(t)
+        return 0 if t == Const("zero") else 1 + value(t.arg)  # succ x
+
+    for name, arity in (("add", 2), ("mul", 2), ("pow2", 1), ("pred", 1), ("tri", 1), ("poly", 2)):
+        for args in product(range(4), repeat=arity):
+            assert value(apply(Const(name), [nat(a) for a in args])) == ns[name](*args), (name, args)
 
 
 UNSUPPORTED = [

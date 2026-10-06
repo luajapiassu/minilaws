@@ -6,9 +6,10 @@ import os
 
 import pytest
 
-from minilaws import PROJECT_MARKERS, check_project
+from minilaws import PROJECT_MARKERS, check_project, laws_dirs
 
 ROOTS = pytest.StashKey[set]()
+MISSED = pytest.StashKey[list]()
 
 
 class LawsBroken(Exception):
@@ -39,6 +40,26 @@ def pytest_collect_file(file_path, parent):
         return None
     seen.add(root)
     return LawsFile.from_parent(parent, path=file_path)
+
+
+def pytest_collection_finish(session):
+    """Narrowed collection (`testpaths`, `--ignore`) would silently turn the laws off: say so.
+    Not when paths are given on the command line, since then the user picked them."""
+    config = session.config
+    if config.args_source == pytest.Config.ArgsSource.ARGS:
+        return
+    # ponytail: walks the rootdir once per run; skip it behind an option if that's ever slow
+    roots = {project_root(d / "_", config.rootpath) for d in laws_dirs(config.rootpath)}
+    # session.items, not ROOTS: pytest also visits files it then filters out by testpaths
+    ran = {project_root(i.path, config.rootpath) for i in session.items if isinstance(i, LawsItem)}
+    config.stash[MISSED] = sorted(roots - ran)
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    if missed := config.stash.get(MISSED, []):
+        terminalreporter.write_sep("=", "minilaws: laws not collected", yellow=True)
+        for root in missed:
+            terminalreporter.write_line(f"{root}: run `minilaws check` on it, or let pytest collect its .laws files")
 
 
 class LawsFile(pytest.File):
