@@ -37,6 +37,20 @@ def test_pre_blocks_editing_laws():
     assert code == 2 and "human-owned" in err
 
 
+def test_pre_blocks_editing_the_config():
+    # otherwise LAWS.laws could be dropped from `laws` or `files`
+    d = project()
+    code, err = run("pre", d, "minilaws.toml")
+    assert code == 2 and "human-owned" in err
+
+
+def test_hook_fails_closed_on_unexpected_errors():
+    # exit 1 is a non-blocking error for Claude Code: the edit would go through unchecked
+    d = project(config="files = [\n")
+    code, err = run("post", d, str(d / "app.py"))
+    assert code == 2 and "minilaws hook failed" in err
+
+
 def test_pre_allows_editing_code():
     d = project()
     assert run("pre", d, "app.py")[0] == 0  # relative paths resolve against cwd

@@ -284,6 +284,112 @@ def test_project_without_laws_is_an_error():
     assert not ok and "no .laws files" in msg
 
 
+def test_law_cannot_depend_on_code_outside_python_or_its_own_file():
+    # AI unmarks app.py (so its buggy add isn't checked) and redefines add in proofs.laws
+    d = make_project()
+    (d / "app.py").write_text("def add(n, m):\n    return n\n", encoding="utf-8")
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("\n" + ADD)
+    ok, msg = check_project(d)
+    assert not ok and "law add_zero" in msg and "'add'" in msg, msg
+
+
+def test_law_cannot_depend_on_a_type_from_a_proof_file():
+    # an empty type defined by the AI would make a law about it vacuous
+    d = make_project()
+    (d / "LAWS.laws").write_text("law all_empty : (x : Thing) -> Eq x x\n", encoding="utf-8")
+    (d / "proofs.laws").write_text("inductive Thing : Type 0 where\nproof all_empty := fun x => refl\n", encoding="utf-8")
+    ok, msg = check_project(d)
+    assert not ok and "'Thing'" in msg, msg
+
+
+def test_law_may_use_defs_from_its_own_file():
+    d = make_project()
+    with open(d / "LAWS.laws", "a", encoding="utf-8") as f:
+        f.write("def double : Nat -> Nat := fun n => add n n\nlaw double_zero : Eq (double zero) zero\n")
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("proof double_zero := refl\n")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
+def test_python_rejects_imports_other_than_minilaws():
+    # the checker would verify one add while Python runs another
+    try:
+        translate_python("from evil import add\n")
+    except CheckError as e:
+        assert "unsupported" in str(e)
+        return
+    raise AssertionError("translated a foreign import")
+
+
+def test_python_rejects_calls_to_functions_not_defined_earlier_in_the_file():
+    src = py("""
+        def double(n: Nat) -> Nat:
+            return add(n, n)
+        """)
+    try:
+        translate_python(src)
+    except CheckError as e:
+        assert "unsupported" in str(e) and "add" in str(e)
+        return
+    raise AssertionError("translated a call to an unknown function")
+
+
+def test_python_syntax_error_is_rejected():
+    d = make_project()
+    (d / "app.py").write_text("from minilaws import Nat\ndef add(\n", encoding="utf-8")
+    ok, msg = check_project(d)
+    assert not ok and "app.py" in msg, msg
+
+
+def test_huge_literal_is_rejected_not_a_crash():
+    d = make_project()
+    with open(d / "app.py", "a", encoding="utf-8") as f:
+        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 5000\n")
+    ok, msg = check_project(d)
+    assert not ok and "too deep" in msg, msg
+
+
+def test_missing_file_is_rejected_not_a_crash():
+    d = make_project()
+    (d / "minilaws.toml").write_text('files = ["app.py", "LAWS.laws", "gone.laws"]\n', encoding="utf-8")
+    ok, msg = check_project(d)
+    assert not ok and "gone.laws" in msg, msg
+
+
+def test_def_and_theorem_order_across_files_does_not_matter():
+    # a_ sorts first but needs z_'s code and lemmas
+    d = make_project(names=("z_app.py", "LAWS.laws", "a_proofs.laws"))
+    proofs = (d / "a_proofs.laws").read_text(encoding="utf-8")
+    lemmas, rest = proofs.split("-- By computation")
+    (d / "a_proofs.laws").write_text("--" + rest +"def twice : Nat -> Nat := fun n => add n n\n", encoding="utf-8")
+    (d / "z_lemmas.laws").write_text(lemmas, encoding="utf-8")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
+def test_nested_project_is_checked_on_its_own():
+    outer = make_project()
+    shutil.copytree(make_project(), outer / "sub")  # same names, separate project
+    assert check_project(outer)[0] and check_project(outer / "sub")[0]
+
+
+def test_dir_named_env_is_checked_but_real_venvs_are_skipped():
+    d = make_project()
+    for name, marker in (("env", False), ("myvenv", True)):
+        (d / name).mkdir()
+        (d / name / "x.laws").write_text(f"law nope_{name} : Eq zero (succ zero)\n", encoding="utf-8")
+        if marker:
+            (d / name / "pyvenv.cfg").write_text("", encoding="utf-8")
+    ok, msg = check_project(d)
+    assert not ok and "nope_env" in msg and "nope_myvenv" not in msg, msg
+
+
+def test_at_works_on_local_variables():
+    check_source("theorem t : (f : {x : Nat} -> Nat) -> Nat := fun f => @f zero")
+
+
 def test_cli_check_command():
     good, bad = make_project(), make_project()
     (bad / "proofs.laws").write_text("", encoding="utf-8")
