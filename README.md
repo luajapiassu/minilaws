@@ -14,7 +14,7 @@ A kernel can't check one thing: whether the statement is the right one. For that
 ## Usage
 
 ```
-pip install git+https://github.com/luajapiassu/minilaws   # not on PyPI yet (https://github.com/luajapiassu/minilaws/issues/1)
+pip install minilaws
 ```
 
 1. Ask your AI to write your app's rules in `LAWS.laws` and to prove them.
@@ -71,7 +71,7 @@ In CI, run it against the PR's base branch. The pytest plugin doesn't take `--ag
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- run: pip install git+https://github.com/luajapiassu/minilaws
+- run: pip install minilaws
 - run: minilaws check --against origin/${{ github.base_ref }}
 ```
 
