@@ -76,7 +76,7 @@ In CI, run it against the PR's base branch, through pytest or the CLI:
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- run: pip install minilaws==0.2.0
+- run: pip install minilaws==0.3.0
 - run: pytest --minilaws-against=origin/${{ github.base_ref }}   # or: minilaws check --against ...
 ```
 
