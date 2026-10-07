@@ -151,7 +151,7 @@ Bash commands are watched by their effect, not their text: the hook records the 
 
 ## Limitations
 
-- Unary `Nat`: a huge literal like `n + 5000` is rejected as too deep to check.
+- Unary `Nat`: `n + k` is `k` nested `succ`s, so checking time grows with `k²`. A literal in checked Python may be at most 10000 (a law over `n + 10000` checks in about 2 s); bigger ones are rejected up front.
 - A checked `.py` module holds only functions over `Nat`: no classes, constants or `if __name__ == "__main__"`.
 
 Details and possible ways out: [#9](https://github.com/luajapiassu/minilaws/issues/9).

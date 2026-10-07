@@ -3,10 +3,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import random
+from dataclasses import replace
 from itertools import product
 from pathlib import Path
 
-from minilaws import App, CheckError, Const, Env, apply, check_project, check_source, main, read_source, translate_python
+from minilaws import App, CheckError, Const, Env, Lam, Meta, Pi, Sort, Var, apply, instantiate, check_project, check_source, main, read_source, translate_python
 
 ROOT = Path(__file__).parent
 EX = ROOT / "examples"
@@ -76,6 +78,46 @@ def test_at_passes_implicits_explicitly():
 
 def test_uninferable_implicit_is_reported():
     rejects("theorem t : Eq zero zero := Eq.subst (fun x => Eq zero zero) refl refl", "could not infer")
+
+
+def test_instantiate_matches_textbook_definition():
+    # instantiate is trusted. Reference: body[0 := arg] as shift(-1) . subst . shift(+1),
+    # the obvious-but-slow version it replaced. repr() also compares Var.explicit.
+    def shift(t, d, cut=0):
+        match t:
+            case Var(i):
+                return replace(t, i=i + d) if i >= cut else t
+            case Pi(_, a, b) | Lam(_, a, b):
+                return replace(t, dom=a and shift(a, d, cut), body=shift(b, d, cut + 1))
+            case App(f, a):
+                return App(shift(f, d, cut), shift(a, d, cut))
+        return t
+
+    def subst(t, j, s):
+        match t:
+            case Var(i):
+                return s if i == j else t
+            case Pi(_, a, b) | Lam(_, a, b):
+                return replace(t, dom=a and subst(a, j, s), body=subst(b, j + 1, shift(s, 1)))
+            case App(f, a):
+                return App(subst(f, j, s), subst(a, j, s))
+        return t
+
+    def term(depth, binders):
+        r = rng.random()
+        if depth == 0 or r < 0.25:
+            return rng.choice([Var(rng.randrange(binders + 3), rng.random() < 0.3), Const("c"), Sort(0), Meta(0)])
+        if r < 0.5:
+            return App(term(depth - 1, binders), term(depth - 1, binders))
+        dom = term(depth - 1, binders)
+        if rng.random() < 0.5:
+            return Pi("x", dom, term(depth - 1, binders + 1))
+        return Lam("x", None if rng.random() < 0.2 else dom, term(depth - 1, binders + 1), rng.random() < 0.3)
+
+    rng = random.Random(0)
+    for _ in range(3000):
+        body, arg = term(rng.randrange(7), 1), term(rng.randrange(5), 0)
+        assert repr(instantiate(body, arg)) == repr(shift(subst(body, 0, shift(arg, 1)), -1)), (body, arg)
 
 
 def test_kernel_rechecks_elaborator_output():
@@ -413,10 +455,31 @@ def test_python_syntax_error_is_rejected():
     assert not ok and "app.py" in msg, msg
 
 
+def test_large_literal_is_checked():
+    # unary Nat: n + 2000 is 2000 nested succs, checked by the kernel in conv
+    d = make_project()
+    with open(d / "app.py", "a", encoding="utf-8") as f:
+        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 2000\n")
+    with open(d / "LAWS.laws", "a", encoding="utf-8") as f:
+        f.write("law big_add : (n : Nat) -> Eq (big n) (add n (big zero))\n")
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("proof big_add := fun n => refl\n")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
 def test_huge_literal_is_rejected_not_a_crash():
     d = make_project()
     with open(d / "app.py", "a", encoding="utf-8") as f:
-        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 5000\n")
+        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 20000\n")
+    ok, msg = check_project(d)
+    assert not ok and "app.py" in msg and "above 10000" in msg, msg
+
+
+def test_deep_hand_written_term_is_rejected_not_a_crash():
+    d = make_project()
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("theorem deep : Nat := " + "succ (" * 100_000 + "zero" + ")" * 100_000 + "\n")
     ok, msg = check_project(d)
     assert not ok and "too deep" in msg, msg
 
