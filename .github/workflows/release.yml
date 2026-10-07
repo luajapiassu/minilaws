@@ -1,4 +1,4 @@
-# Publishes to PyPI on a `v*` tag, via trusted publishing (no token stored here).
+# Publishes to PyPI and creates the GitHub Release on a `v*` tag, via trusted publishing (no token stored here).
 # PyPI side: a publisher for owner luajapiassu, repo minilaws, workflow release.yml, environment pypi.
 name: release
 on:
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      contents: read   # declaring permissions drops the defaults; checkout needs this
+      contents: write  # checkout, and `gh release create` (declaring permissions drops the defaults)
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -21,3 +21,6 @@ jobs:
         run: test "v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$GITHUB_REF_NAME"
       - run: python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1
+      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
