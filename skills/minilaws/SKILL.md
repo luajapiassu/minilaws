@@ -33,16 +33,18 @@ def name : T := t                 -- code
 law name : T                      -- statement only (LAWS.laws)
 proof name := t                   -- proof of a law declared earlier
 theorem name : T := t             -- helper lemma: statement + proof
-inductive List (A : Type 0) : Type 0 where
-  | nil : List A
-  | cons : A -> List A -> List A  -- also generates List.rec
+inductive Tree (A : Type 0) : Type 0 where
+  | leaf : Tree A
+  | node : Tree A -> A -> Tree A -> Tree A  -- also generates Tree.rec
 (x : A) -> B    A -> B            -- for all x : A, B   /   implication
 {x : A} -> B    fun {x} => t      -- implicit argument (inferred)
 @f A x                            -- pass implicits explicitly when inference fails
 ```
 
 Built-ins: `Nat` (`zero`, `succ`, `Nat.rec`), `Eq a b` (`refl`, `Eq.rec`, `Eq.subst`),
-`Empty`, `Unit` (`tt`), `Not A` (= `A -> Empty`). Every inductive `T` also gets `T.rec1`.
+`Empty`, `Unit` (`tt`), `Not A` (= `A -> Empty`), `Bool` (`false`, `true`; `Bool.rec` takes
+the `false` case first), `List A` (`nil`, `cons`, `List.rec`), `Bool.cond c t e`, `Bool.not`,
+`Bool.and`, `Bool.or`, `Nat.eqb`, `Nat.ltb`. Every inductive `T` also gets `T.rec1`.
 
 ## Proof patterns
 
@@ -86,14 +88,26 @@ def add(n: Nat, m: Nat) -> Nat:
     if m == 0:
         return n
     return add(n, m - 1) + 1
+
+def cat(xs: list[Nat], ys: list[Nat]) -> list[Nat]:
+    if not xs:
+        return ys
+    return [xs[0]] + cat(xs[1:], ys)
 ```
 
 Allowed:
-- Parameters and results annotated `Nat`.
-- At most one `if m == 0: return ...`, followed by one `return ...`.
-- Recursion only as `f(..., m - 1, ...)`, with the other arguments unchanged.
-- Literals, `x + <int>`, and calls to functions defined earlier in the same file.
+- Parameters and results annotated `Nat`, `bool` or `list[...]` of those.
+- At most one `if ...: return ...`, followed by one `return ...`. With `if m == 0` (Nat
+  parameter) or `if not xs` (list parameter) it's structural recursion: `f(..., m - 1, ...)`
+  or `f(..., xs[1:], ...)`, other arguments unchanged; `xs[0]` and `xs[1:]` only there.
+  Any other condition is a plain if-then-else, without recursion.
+- Literals, `True`/`False`, `x + <int>`, comparisons of `Nat`s (not chained), `and`/`or`/`not`,
+  `a if c else b`, list literals, `[a, ...] + xs`, and calls to functions defined earlier in
+  the same file.
 - Imports only from `minilaws`.
+
+In the laws, `if c` is `Bool.cond c ...`, `a < b` is `Nat.ltb a b`, `a == b` is `Nat.eqb a b`,
+and `[x] + xs` is `cons x xs`. Prove things about them with `Bool.rec`/`Nat.rec`/`List.rec`.
 
 A file with laws may only use the prelude, Python code and its own declarations. Put
 helper lemmas in your proofs file, but never a `def` or `inductive` that a law relies on.

@@ -596,6 +596,22 @@ inductive Empty : Type 0 where
 inductive Unit : Type 0 where
   | tt : Unit
 def Not : Type 0 -> Type 0 := fun A => A -> Empty
+inductive Bool : Type 0 where
+  | false : Bool
+  | true : Bool
+inductive List (A : Type 0) : Type 0 where
+  | nil : List A
+  | cons : A -> List A -> List A
+def Bool.cond : {A : Type 0} -> Bool -> A -> A -> A := fun {A} c t e => Bool.rec (fun _ => A) e t c
+def Bool.not : Bool -> Bool := fun b => Bool.cond b false true
+def Bool.and : Bool -> Bool -> Bool := fun a b => Bool.cond a b false
+def Bool.or : Bool -> Bool -> Bool := fun a b => Bool.cond a true b
+def Nat.eqb : Nat -> Nat -> Bool := fun n => Nat.rec (fun _ => Nat -> Bool)
+  (fun m => Nat.rec (fun _ => Bool) true (fun _ _ => false) m)
+  (fun _ ih m => Nat.rec (fun _ => Bool) false (fun m' _ => ih m') m) n
+def Nat.ltb : Nat -> Nat -> Bool := fun n => Nat.rec (fun _ => Nat -> Bool)
+  (fun m => Nat.rec (fun _ => Bool) false (fun _ _ => true) m)
+  (fun _ ih m => Nat.rec (fun _ => Bool) false (fun m' _ => ih m') m) n
 """
 
 
@@ -821,20 +837,23 @@ def check_source(src, env=None):
 
 
 # ---------- Python -> minilaws ----------
-# Trusted translator for a small, total subset of Python over natural numbers:
+# Trusted translator for a small, total subset of Python over Nat, bool and list[...]:
 #
 #     def f(x: Nat, ..., m: Nat) -> Nat:
 #         if m == 0:              # optional: structural recursion on parameter m
 #             return BASE
 #         return STEP             # may call f(..., m - 1, ...) with the other args unchanged
 #
-# Expressions: parameters, int literals >= 0, `e + <int>`, `m - 1` (in STEP), calls to
+# Same with `if not xs:` on a list parameter: STEP may use xs[0], xs[1:] and f(..., xs[1:], ...).
+# Any other `if c: return a` / `return b` is `a if c else b` (Bool.cond, no recursion).
+# Expressions: parameters, int literals >= 0, `e + <int>`, `m - 1` (in STEP), True/False,
+# comparisons of Nats, and/or/not, `a if c else b`, list literals, `[...] + e`, calls to
 # functions defined earlier in the same file. Anything else is refused instead of guessed at.
+# Types aren't tracked here: a translation that mixes them up (`xs == ys`) fails in the kernel.
 # Only `from minilaws import ...` is allowed: any other import could bind a name the checker
 # verifies to different code at runtime.
 
 Nat = int  # runtime type for the Python side; the laws speak about n >= 0
-RESERVED = KEYWORDS | {"Nat", "zero", "succ", "Eq", "refl"}
 
 
 def translate_python(src):
@@ -863,43 +882,60 @@ def _is_docstring(node):
     return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 
 
-def _is_nat(ann):
-    return isinstance(ann, ast.Name) and ann.id == "Nat"
+def _py_type(ann):
+    """`Nat`, `bool`, `list[T]` -> the minilaws type; None for anything else."""
+    match ann:
+        case ast.Name(id="Nat"):
+            return "Nat"
+        case ast.Name(id="bool"):
+            return "Bool"
+        case ast.Subscript(value=ast.Name(id="list"), slice=elt) if (t := _py_type(elt)):
+            return f"(List {t})"
+    return None
 
 
 def _translate_fn(fn, known):
     a = fn.args
-    params = [p.arg for p in a.args]
+    types = {p.arg: _py_type(p.annotation) for p in a.args}
+    ret = _py_type(fn.returns)
     if a.vararg or a.kwarg or a.kwonlyargs or a.posonlyargs or a.defaults or fn.decorator_list:
         raise _unsupported(fn, "plain positional parameters only")
-    if not all(_is_nat(p.annotation) for p in a.args) or not _is_nat(fn.returns):
-        raise _unsupported(fn, "parameters and result must be annotated Nat")
-    if any(p in RESERVED for p in params):
-        raise _unsupported(fn, f"parameter names can't be any of {sorted(RESERVED)}")
+    if None in types.values() or ret is None:
+        raise _unsupported(fn, "parameters and result must be annotated Nat, bool or list[...] of those")
+    if reserved := sorted(types.keys() & PRELUDE_NAMES):
+        raise _unsupported(fn, f"parameter names can't be prelude names: {reserved}")
+    go = lambda e, rec=None, mode="plain": _py_expr(e, fn.name, types, rec, mode, known)
     body = fn.body
     if _is_docstring(body[0]):
         body = body[1:]
     match body:
         case [ast.Return(value=e)]:
-            expr = _py_expr(e, fn.name, params, None, "plain", known)
-        case [ast.If(test=test, body=[ast.Return(value=base)], orelse=orelse), *rest]:
-            m = _zero_test(test, params)
+            expr = go(e)
+        case [ast.If(test=test, body=[ast.Return(value=then)], orelse=orelse), *rest]:
             steps = orelse + rest
-            if m is None or len(steps) != 1 or not isinstance(steps[0], ast.Return):
-                raise _unsupported(fn, "expected `if m == 0: return ...` then one `return ...`")
-            b = _py_expr(base, fn.name, params, m, "base", known)
-            s = _py_expr(steps[0].value, fn.name, params, m, "step", known)
-            expr = f"Nat.rec (fun _ => Nat) {b} (fun pred' ih' => {s}) {m}"
+            if len(steps) != 1 or not isinstance(steps[0], ast.Return):
+                raise _unsupported(fn, "expected `if ...: return ...` then one `return ...`")
+            other = steps[0].value
+            m = _rec_test(test, types)
+            if m is None:
+                expr = f"Bool.cond {go(test)} {go(then)} {go(other)}"
+            elif types[m] == "Nat":
+                expr = f"Nat.rec (fun _ => {ret}) {go(then, m, 'base')} (fun pred' ih' => {go(other, m, 'step')}) {m}"
+            else:
+                expr = f"List.rec (fun _ => {ret}) {go(then, m, 'base')} (fun h' t' ih' => {go(other, m, 'step')}) {m}"
         case _:
-            raise _unsupported(fn, "body must be `return e`, or `if m == 0: return e` then `return e`")
-    ty = " -> ".join(["Nat"] * (len(params) + 1))
-    return f"def {fn.name} : {ty} := " + (f"fun {' '.join(params)} => {expr}" if params else expr)
+            raise _unsupported(fn, "body must be `return e`, or `if ...: return e` then `return e`")
+    ty = " -> ".join([*types.values(), ret])
+    return f"def {fn.name} : {ty} := " + (f"fun {' '.join(types)} => {expr}" if types else expr)
 
 
-def _zero_test(test, params):
+def _rec_test(test, types):
+    """`m == 0` on a Nat parameter or `not xs` on a list parameter: structural recursion on it."""
     match test:
-        case ast.Compare(left=ast.Name(id=m), ops=[ast.Eq()], comparators=[ast.Constant(value=0)]) if m in params:
+        case ast.Compare(left=ast.Name(id=m), ops=[ast.Eq()], comparators=[ast.Constant(value=0)]) if types.get(m) == "Nat":
             return m
+        case ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=xs)) if types.get(xs, "").startswith("(List"):
+            return xs
     return None
 
 
@@ -916,37 +952,77 @@ def _nat_literal(e):
     return isinstance(e, ast.Constant) and type(e.value) is int and e.value >= 0
 
 
-def _py_expr(e, fn, params, rec, mode, known):
-    """mode: 'plain' (no recursion), 'base' (rec var is 0), 'step' (rec var is succ pred')."""
-    go = lambda x: _py_expr(x, fn, params, rec, mode, known)
+COMPARE = {  # a <op> b, Nats only
+    ast.Eq: "(Nat.eqb {a} {b})", ast.NotEq: "(Bool.not (Nat.eqb {a} {b}))",
+    ast.Lt: "(Nat.ltb {a} {b})", ast.Gt: "(Nat.ltb {b} {a})",
+    ast.LtE: "(Bool.not (Nat.ltb {b} {a}))", ast.GtE: "(Bool.not (Nat.ltb {a} {b}))",
+}
+
+
+def _py_expr(e, fn, types, rec, mode, known):
+    """mode: 'plain' (no recursion), 'base' (rec var is 0 / []), 'step' (rec var is
+    succ pred' / cons h' t')."""
+    go = lambda x: _py_expr(x, fn, types, rec, mode, known)
+    step = mode == "step"
     for lit in (e, getattr(e, "right", None)):
         if _nat_literal(lit) and lit.value > MAX_LITERAL:
             raise _unsupported(e, f"literal above {MAX_LITERAL}: Nat is unary, so checking time grows with its square")
     if _nat_literal(e):
         return _succs("zero", e.value)
     match e:
-        case ast.Name(id=x) if x in params:
-            if x == rec:
-                return "zero" if mode == "base" else "(succ pred')"
-            return x
+        case ast.Constant(value=b) if type(b) is bool:
+            return "true" if b else "false"
+        case ast.Name(id=x) if x in types:
+            if x != rec:
+                return x
+            if types[x] == "Nat":
+                return "(succ pred')" if step else "zero"
+            return "(cons h' t')" if step else "nil"
         case ast.BinOp(left=left, op=ast.Add(), right=right) if _nat_literal(right):
             return _succs(go(left), right.value)
-        case ast.BinOp(left=ast.Name(id=x), op=ast.Sub(), right=ast.Constant(value=1)) if x == rec and mode == "step":
+        case ast.BinOp(left=ast.List(elts=elts), op=ast.Add(), right=right):
+            return _conses([go(x) for x in elts], go(right))
+        case ast.List(elts=elts):
+            return _conses([go(x) for x in elts], "nil")
+        case ast.BinOp(left=ast.Name(id=x), op=ast.Sub(), right=ast.Constant(value=1)) if x == rec and step:
             return "pred'"
+        case ast.Subscript(value=ast.Name(id=x), slice=ast.Constant(value=0)) if x == rec and step:
+            return "h'"
+        case ast.Subscript(value=ast.Name(id=x), slice=ast.Slice(lower=ast.Constant(value=1), upper=None, step=None)) if x == rec and step:
+            return "t'"
+        case ast.Compare(left=left, ops=[op], comparators=[right]) if type(op) in COMPARE:
+            return COMPARE[type(op)].format(a=go(left), b=go(right))
+        case ast.BoolOp(op=op, values=values):
+            out = go(values[-1])
+            for v in reversed(values[:-1]):
+                out = f"({'Bool.and' if isinstance(op, ast.And) else 'Bool.or'} {go(v)} {out})"
+            return out
+        case ast.UnaryOp(op=ast.Not(), operand=x):
+            return f"(Bool.not {go(x)})"
+        case ast.IfExp(test=test, body=then, orelse=other):
+            return f"(Bool.cond {go(test)} {go(then)} {go(other)})"
         case ast.Call(func=ast.Name(id=f), args=args, keywords=[]) if f == fn:
-            i = params.index(rec) if mode == "step" else None
-            pred = lambda a: isinstance(a, ast.BinOp) and isinstance(a.op, ast.Sub) and go(a) == "pred'"
-            ok = i is not None and len(args) == len(params) and all(
-                pred(a) if j == i else (isinstance(a, ast.Name) and a.id == params[j]) for j, a in enumerate(args)
+            params = list(types)
+            # go(a) is pred' / t' only for `m - 1` / `xs[1:]` on the recursion variable
+            ok = step and len(args) == len(params) and all(
+                go(a) in ("pred'", "t'") if p == rec else (isinstance(a, ast.Name) and a.id == p) for p, a in zip(params, args)
             )
             if not ok:
-                raise _unsupported(e, f"recursion must be {fn}(..., m - 1, ...) after `if m == 0`, other arguments unchanged")
+                raise _unsupported(e, f"recursion must be {fn}(..., m - 1, ...) after `if m == 0` "
+                                      f"or {fn}(..., xs[1:], ...) after `if not xs`, other arguments unchanged")
             return "ih'"
         case ast.Call(func=ast.Name(id=f), args=args, keywords=[]) if f in known:
             return "(" + " ".join([f] + [go(a) for a in args]) + ")"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):
         raise _unsupported(e, f"`{e.func.id}` is not a function defined earlier in this file")
-    raise _unsupported(e, "only parameters, literals, `x + <int>`, `m - 1` and function calls")
+    raise _unsupported(e, "only parameters, literals, True/False, `x + <int>`, comparisons, and/or/not, "
+                          "`a if c else b`, lists, `m - 1`, `xs[0]`, `xs[1:]` and function calls")
+
+
+def _conses(heads, tail):
+    for h in reversed(heads):
+        tail = f"(cons {h} {tail})"
+    return tail
 
 
 def read_source(path):
@@ -962,6 +1038,10 @@ def declared_names(decl):
     if kind == "inductive":
         return {name, f"{name}.rec", f"{name}.rec1"} | {c for c, _ in payload[2]}
     return {name}  # for a proof: the law it makes usable
+
+
+# a Python parameter with one of these names would shadow the constant in the translation
+PRELUDE_NAMES = KEYWORDS | {n for d in parse_decls(PRELUDE) for n in declared_names(d)}
 
 
 def used_names(decl):

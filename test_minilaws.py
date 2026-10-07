@@ -8,7 +8,7 @@ from dataclasses import replace
 from itertools import product
 from pathlib import Path
 
-from minilaws import App, CheckError, Const, Env, Lam, Meta, Pi, Sort, Var, apply, instantiate, check_project, check_source, main, read_source, translate_python
+from minilaws import App, CheckError, Const, Env, Lam, Meta, Pi, Sort, Var, apply, instantiate, spine, check_project, check_source, main, read_source, translate_python
 
 ROOT = Path(__file__).parent
 EX = ROOT / "examples"
@@ -136,25 +136,25 @@ def test_kernel_rechecks_elaborator_output():
 # ---------- user-defined inductive types ----------
 
 LIST = ADD + (EX / "proofs.laws").read_text(encoding="utf-8").split("-- By computation")[0] + """
-inductive List (A : Type 0) : Type 0 where
-  | nil : List A
-  | cons : A -> List A -> List A
-def length : {A : Type 0} -> List A -> Nat :=
-  fun xs => List.rec (fun _ => Nat) zero (fun _ _ ih => succ ih) xs
-def append : {A : Type 0} -> List A -> List A -> List A :=
-  fun {A} xs ys => List.rec (fun _ => List A) ys (fun x _ ih => cons x ih) xs
+inductive Stack (A : Type 0) : Type 0 where
+  | empty : Stack A
+  | push : A -> Stack A -> Stack A
+def length : {A : Type 0} -> Stack A -> Nat :=
+  fun xs => Stack.rec (fun _ => Nat) zero (fun _ _ ih => succ ih) xs
+def append : {A : Type 0} -> Stack A -> Stack A -> Stack A :=
+  fun {A} xs ys => Stack.rec (fun _ => Stack A) ys (fun x _ ih => push x ih) xs
 """
 
 
 def test_user_inductive_computes():
-    check_source(LIST + "theorem t : Eq (length (cons zero (cons zero nil))) (succ (succ zero)) := refl")
+    check_source(LIST + "theorem t : Eq (length (push zero (push zero empty))) (succ (succ zero)) := refl")
 
 
 def test_law_about_user_inductive_by_induction():
     check_source(LIST + """
-law length_append : {A : Type 0} -> (xs ys : List A) -> Eq (length (append xs ys)) (add (length ys) (length xs))
+law length_append : {A : Type 0} -> (xs ys : Stack A) -> Eq (length (append xs ys)) (add (length ys) (length xs))
 proof length_append := fun {A} xs ys =>
-  List.rec (fun l => Eq (length (append l ys)) (add (length ys) (length l))) refl (fun x l ih => cong succ ih) xs
+  Stack.rec (fun l => Eq (length (append l ys)) (add (length ys) (length l))) refl (fun x l ih => cong succ ih) xs
 """)
 
 
@@ -190,10 +190,17 @@ def test_large_elimination_proves_constructors_differ():
 
 def test_large_elimination_on_user_inductive():
     check_source("""
-inductive Bool : Type 0 where
-  | true : Bool
-  | false : Bool
-def IsTrue : Bool -> Type 0 := fun b => Bool.rec1 (fun _ => Type 0) Unit Empty b
+inductive Coin : Type 0 where
+  | heads : Coin
+  | tails : Coin
+def IsHeads : Coin -> Type 0 := fun c => Coin.rec1 (fun _ => Type 0) Unit Empty c
+theorem heads_ne_tails : Not (Eq heads tails) := fun h => Eq.subst IsHeads h tt
+""")
+
+
+def test_prelude_bool_true_ne_false():
+    check_source("""
+def IsTrue : Bool -> Type 0 := fun b => Bool.rec1 (fun _ => Type 0) Empty Unit b
 theorem true_ne_false : Not (Eq true false) := fun h => Eq.subst IsTrue h tt
 """)
 
@@ -278,7 +285,52 @@ TRANSLATED = PY_ADD + py("""
 
     def poly(a: Nat, b: Nat) -> Nat:
         return add(mul(a, a + 1), pred(b) + 3)
+
+    def eq(a: Nat, b: Nat) -> bool:
+        return a == b
+
+    def cmp(a: Nat, b: Nat) -> list[bool]:
+        return [a != b, a < b, a <= b, a > b, a >= b]
+
+    def logic(p: bool, q: bool) -> list[bool]:
+        return [not p, p and q, p or q, p and q or not p, True, False]
+
+    def max2(a: Nat, b: Nat) -> Nat:
+        if a < b:
+            return b
+        return a
+
+    def clamp(a: Nat, b: Nat) -> Nat:
+        return 3 if a > 3 else a + 1
+
+    def sum(xs: list[Nat]) -> Nat:
+        if not xs:
+            return 0
+        return add(xs[0], sum(xs[1:]))
+
+    def small(xs: list[Nat]) -> list[Nat]:
+        if not xs:
+            return xs
+        return [xs[0]] + small(xs[1:]) if xs[0] < 2 else small(xs[1:])
+
+    def cat(xs: list[Nat], ys: list[Nat]) -> list[Nat]:
+        if not xs:
+            return ys
+        return [xs[0]] + cat(xs[1:], ys)
+
+    def has(xs: list[Nat], k: Nat) -> bool:
+        if not xs:
+            return False
+        return xs[0] == k or has(xs[1:], k)
+
+    def wrap(a: Nat) -> list[list[Nat]]:
+        return [[], [a, a + 1]]
     """)
+
+# argument kinds: N = Nat, B = bool, L = list[Nat]
+FUNCTIONS = {"add": "NN", "mul": "NN", "pow2": "N", "pred": "N", "tri": "N", "poly": "NN", "eq": "NN",
+             "cmp": "NN", "logic": "BB", "max2": "NN", "clamp": "NN", "sum": "L", "small": "L",
+             "cat": "LL", "has": "LN", "wrap": "N"}
 
 
 def test_translation_computes_what_python_computes():
@@ -287,15 +339,60 @@ def test_translation_computes_what_python_computes():
     env = check_source(translate_python(TRANSLATED))
     ns = {}
     exec(TRANSLATED, ns)
-    nat = lambda k: Const("zero") if k == 0 else App(Const("succ"), nat(k - 1))
+
+    def term(v):
+        if isinstance(v, bool):
+            return Const("true" if v else "false")
+        if isinstance(v, int):
+            return Const("zero") if v == 0 else App(Const("succ"), term(v - 1))
+        out = App(Const("nil"), Const("Nat"))
+        for x in reversed(v):
+            out = apply(Const("cons"), [Const("Nat"), term(x), out])
+        return out
 
     def value(t):
-        t = env.whnf(t)
-        return 0 if t == Const("zero") else 1 + value(t.arg)  # succ x
+        head, args = spine(env.whnf(t))
+        match head.name:
+            case "zero":
+                return 0
+            case "succ":
+                return 1 + value(args[0])
+            case "true" | "false":
+                return head.name == "true"
+            case "nil":
+                return []
+            case "cons":
+                return [value(args[1])] + value(args[2])
+        raise AssertionError(f"not a value: {t}")
 
-    for name, arity in (("add", 2), ("mul", 2), ("pow2", 1), ("pred", 1), ("tri", 1), ("poly", 2)):
-        for args in product(range(4), repeat=arity):
-            assert value(apply(Const(name), [nat(a) for a in args])) == ns[name](*args), (name, args)
+    samples = {"N": range(4), "B": (False, True), "L": ([], [0], [3, 1], [2, 0, 5, 1])}
+    for name, kinds in FUNCTIONS.items():
+        for args in product(*(samples[k] for k in kinds)):
+            assert value(apply(Const(name), [term(a) for a in args])) == ns[name](*args), (name, args)
+
+
+def test_law_about_python_list_function():
+    src = py("""
+        def cat(xs: list[Nat], ys: list[Nat]) -> list[Nat]:
+            if not xs:
+                return ys
+            return [xs[0]] + cat(xs[1:], ys)
+        """)
+    check_source(translate_python(src) + """
+theorem cong : {A B : Type 0} -> {a b : A} -> (f : A -> B) -> Eq a b -> Eq (f a) (f b) :=
+  fun {A B a b} f h => Eq.subst (fun x => Eq (f a) (f x)) h refl
+law cat_nil : (xs : List Nat) -> Eq (cat xs nil) xs
+proof cat_nil := fun xs =>
+  List.rec (fun l => Eq (cat l nil) l) refl (fun x l ih => cong (cons x) ih) xs
+""")
+
+
+def test_python_type_errors_are_rejected_by_the_kernel():
+    # the translator doesn't track types; comparing lists still can't get through
+    rejects(translate_python(py("""
+        def f(xs: list[Nat], ys: list[Nat]) -> bool:
+            return xs == ys
+        """)), "type mismatch")
 
 
 UNSUPPORTED = [
@@ -332,6 +429,34 @@ UNSUPPORTED = [
     """
     def f(n: Nat, m: Nat) -> Nat:  # + only with a constant; call add() otherwise
         return n + m
+    """,
+    """
+    def f(xs: list[Nat]) -> Nat:  # xs[0] only after `if not xs`, where xs isn't empty
+        return xs[0]
+    """,
+    """
+    def f(xs: list[Nat]) -> list[Nat]:  # only xs[0] and xs[1:]
+        if not xs:
+            return xs
+        return f(xs[2:])
+    """,
+    """
+    def f(n: Nat) -> Nat:  # recursion needs the structural test, not any condition
+        if n < 3:
+            return 0
+        return f(n - 1)
+    """,
+    """
+    def f(a: Nat, b: Nat, c: Nat) -> bool:  # chained comparison
+        return a < b < c
+    """,
+    """
+    def f(xs: list[int]) -> Nat:  # elements must be Nat too
+        return 0
+    """,
+    """
+    def f(xs: list) -> Nat:  # element type required
+        return 0
     """,
 ]
 
