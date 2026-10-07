@@ -3,13 +3,13 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash",
-        "hooks": [{ "type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" pre" }]
+        "hooks": [{ "type": "command", "command": "for py in python3 python; do \"$py\" -c '' 2>/dev/null && exec \"$py\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" pre; done; echo 'minilaws: no working python3 or python on PATH, so the laws are not checked' >&2; exit 2" }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash",
-        "hooks": [{ "type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" post" }]
+        "hooks": [{ "type": "command", "command": "for py in python3 python; do \"$py\" -c '' 2>/dev/null && exec \"$py\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" post; done; echo 'minilaws: no working python3 or python on PATH, so the laws are not checked' >&2; exit 2" }]
       }
     ]
   }
