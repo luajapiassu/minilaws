@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -88,6 +89,8 @@ class Stuck(Exception):
 
 
 def shift(t, d, cut=0):
+    if d == 0:
+        return t
     match t:
         case Var(i):
             return replace(t, i=i + d) if i >= cut else t
@@ -98,32 +101,35 @@ def shift(t, d, cut=0):
     return t
 
 
-def subst(t, j, s):
-    match t:
+def instantiate(body, arg, j=0):
+    """body with Var j := arg (j = binders crossed). Shifts arg only where it lands, so a
+    big argument isn't copied at every beta step."""
+    match body:
         case Var(i):
-            return s if i == j else t
+            if i == j:
+                return shift(arg, j)
+            return replace(body, i=i - 1) if i > j else body
         case Pi(_, a, b) | Lam(_, a, b):
-            return replace(t, dom=a and subst(a, j, s), body=subst(b, j + 1, shift(s, 1)))
+            return replace(body, dom=a and instantiate(a, arg, j), body=instantiate(b, arg, j + 1))
         case App(f, a):
-            return App(subst(f, j, s), subst(a, j, s))
-    return t
-
-
-def instantiate(body, arg):
-    return shift(subst(body, 0, shift(arg, 1)), -1)
+            return App(instantiate(f, arg, j), instantiate(a, arg, j))
+    return body
 
 
 def subterms(t, d=0):
-    """Yield (subterm, binder depth) for every node."""
-    yield t, d
-    match t:
-        case Pi(_, a, b) | Lam(_, a, b):
-            if a is not None:
-                yield from subterms(a, d)
-            yield from subterms(b, d + 1)
-        case App(f, a):
-            yield from subterms(f, d)
-            yield from subterms(a, d)
+    """Yield (subterm, binder depth) for every node, pre-order. An explicit stack, not
+    `yield from`: that costs O(depth) per node, cubic on a deep literal like n + 1000."""
+    todo = [(t, d)]
+    while todo:
+        t, d = todo.pop()
+        yield t, d
+        match t:
+            case Pi(_, a, b) | Lam(_, a, b):
+                todo.append((b, d + 1))
+                if a is not None:
+                    todo.append((a, d))
+            case App(f, a):
+                todo += [(a, d), (f, d)]
 
 
 def has_meta(t):
@@ -411,16 +417,26 @@ class Env:
             a, b = b, a
         if not isinstance(a, Meta):
             return False
+        b = self.zonk(b, k)
         if any(x == a or (isinstance(x, Var) and d <= x.i < d + k) for x, d in subterms(b)):
             raise Stuck  # occurs check / refers to a variable bound after the meta
         self.metas[a.i] = shift(b, -k)
         return True
 
+    def zonk_head(self, t, k):
+        """Resolve a solved meta at the head only; unify reaches the rest as it recurses.
+        A full zonk at every level is quadratic on a deep term like n + 2000."""
+        h, args = spine(t)
+        while isinstance(h, Meta) and self.metas.get(h.i) is not None:
+            h, more = spine(shift(self.metas[h.i], k))
+            args = more + args
+        return apply(h, args)
+
     def unify(self, a, b, k=0):
-        a, b = self.zonk(a, k), self.zonk(b, k)
+        a, b = self.zonk_head(a, k), self.zonk_head(b, k)
         if self.assign_if_meta(a, b, k):
             return
-        a, b = self.whnf(a), self.whnf(b)
+        a, b = self.zonk_head(self.whnf(a), k), self.zonk_head(self.whnf(b), k)
         if self.assign_if_meta(a, b, k):
             return
         if isinstance(spine(a)[0], Meta) or isinstance(spine(b)[0], Meta):
@@ -546,7 +562,11 @@ class Env:
                     if m is None:
                         self.unify_at(ctx, a, fty, dom)
                     else:
-                        self.unify(m, self.elab_check(ctx, a, dom))
+                        core_a = self.elab_check(ctx, a, dom)
+                        if self.metas[m.i] is None:
+                            self.metas[m.i] = core_a  # fresh placeholder: skip unify's O(size) zonk + occurs check
+                        else:
+                            self.unify(m, core_a)
                 except Stuck:
                     self.metas = saved
                     continue
@@ -872,6 +892,9 @@ def _zero_test(test, params):
     return None
 
 
+MAX_LITERAL = 10_000  # ~2s to check a law over it; 20000 takes ~8s
+
+
 def _succs(t, c):
     for _ in range(c):
         t = f"(succ {t})"
@@ -885,6 +908,9 @@ def _nat_literal(e):
 def _py_expr(e, fn, params, rec, mode, known):
     """mode: 'plain' (no recursion), 'base' (rec var is 0), 'step' (rec var is succ pred')."""
     go = lambda x: _py_expr(x, fn, params, rec, mode, known)
+    for lit in (e, getattr(e, "right", None)):
+        if _nat_literal(lit) and lit.value > MAX_LITERAL:
+            raise _unsupported(e, f"literal above {MAX_LITERAL}: Nat is unary, so checking time grows with its square")
     if _nat_literal(e):
         return _succs("zero", e.value)
     match e:
@@ -972,6 +998,38 @@ def foreign_use(decls):
     return None
 
 
+def deep_stack(f):
+    """Run f in a thread with a big stack. Nat is unary, so `n + k` is k nested succs and
+    the parser, shift/instantiate and whnf recurse k deep."""
+    def run(*args, **kwargs):
+        out = []
+        def target():
+            try:
+                out.append((True, f(*args, **kwargs)))
+            except BaseException as e:
+                out.append((False, e))
+        # ponytail: both settings are process-wide while the check runs; fine for a CLI/hook
+        old_size, old_limit = threading.stack_size(STACK_BYTES), sys.getrecursionlimit()
+        sys.setrecursionlimit(RECURSION_LIMIT)
+        try:
+            t = threading.Thread(target=target)
+            t.start()
+            t.join()
+        finally:
+            threading.stack_size(old_size)
+            sys.setrecursionlimit(old_limit)
+        ok, value = out[0]
+        if not ok:
+            raise value
+        return value
+    return run
+
+
+STACK_BYTES = 64 << 20  # 256 MB is refused on Windows
+RECURSION_LIMIT = 100_000
+
+
+@deep_stack
 def check_files(paths):
     """Check a set of files. Returns (ok, message)."""
     try:
@@ -1134,6 +1192,7 @@ def project_files(root):
     return found
 
 
+@deep_stack
 def check_project(root=".", against=None):
     """Check the project under root. With `against` (a git ref), also require every law at
     that ref to still hold with the same meaning; see law_changes."""

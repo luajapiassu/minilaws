@@ -387,10 +387,31 @@ def test_python_syntax_error_is_rejected():
     assert not ok and "app.py" in msg, msg
 
 
+def test_large_literal_is_checked():
+    # unary Nat: n + 2000 is 2000 nested succs, checked by the kernel in conv
+    d = make_project()
+    with open(d / "app.py", "a", encoding="utf-8") as f:
+        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 2000\n")
+    with open(d / "LAWS.laws", "a", encoding="utf-8") as f:
+        f.write("law big_add : (n : Nat) -> Eq (big n) (add n (big zero))\n")
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("proof big_add := fun n => refl\n")
+    ok, msg = check_project(d)
+    assert ok, msg
+
+
 def test_huge_literal_is_rejected_not_a_crash():
     d = make_project()
     with open(d / "app.py", "a", encoding="utf-8") as f:
-        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 5000\n")
+        f.write("\n\ndef big(n: Nat) -> Nat:\n    return n + 20000\n")
+    ok, msg = check_project(d)
+    assert not ok and "app.py" in msg and "above 10000" in msg, msg
+
+
+def test_deep_hand_written_term_is_rejected_not_a_crash():
+    d = make_project()
+    with open(d / "proofs.laws", "a", encoding="utf-8") as f:
+        f.write("theorem deep : Nat := " + "succ (" * 100_000 + "zero" + ")" * 100_000 + "\n")
     ok, msg = check_project(d)
     assert not ok and "too deep" in msg, msg
 
