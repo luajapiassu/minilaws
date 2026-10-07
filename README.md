@@ -158,7 +158,7 @@ Bash commands are watched by their effect, not their text: the hook records the 
 ## Limitations
 
 - Unary `Nat`: `n + k` is `k` nested `succ`s, so checking time grows with `k²`. A literal in checked Python may be at most 10000 (a law over `n + 10000` checks in about 2 s); bigger ones are rejected up front.
-- A checked `.py` module holds only functions over `Nat`, `bool` and lists: no classes, constants, loops or `if __name__ == "__main__"`.
+- A checked `.py` module holds functions over `Nat`, `bool` and lists, `Nat`/`bool` constants (`K: Nat = 3`; list constants are mutable, so not allowed) and, as its last statement, an `if __name__ == "__main__":` block. No classes or loops. The main block isn't checked: it only runs as a script, and it may not rebind a checked name.
 
 Details and possible ways out: [#9](https://github.com/luajapiassu/minilaws/issues/9).
 
