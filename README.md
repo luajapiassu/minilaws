@@ -99,14 +99,14 @@ def name : T := t                 -- code
 law name : T                      -- statement (LAWS.laws)
 proof name := t                   -- proof of a law
 theorem name : T := t             -- helper lemma: statement + proof
-inductive List (A : Type 0) : Type 0 where
-  | nil : List A
-  | cons : A -> List A -> List A  -- generates List.rec (= induction on lists)
+inductive Tree (A : Type 0) : Type 0 where
+  | leaf : Tree A
+  | node : Tree A -> A -> Tree A -> Tree A  -- generates Tree.rec (= induction on trees)
 {x : A} -> B   fun {x} => t       -- implicit arguments, inferred by unification
 @f A x                            -- pass implicit arguments explicitly
 ```
 
-The prelude defines `Nat`, `Eq`, `Empty` and `Unit` with `inductive` itself, so the kernel has no special cases, plus `Not A := A -> Empty`. Every inductive `T` gets two recursors: `T.rec` (motive in `Type 0`) and `T.rec1` (motive in `Type 1`, for types defined by recursion). `T.rec1` is what proves negative laws such as `zero ≠ succ n`; it is safe because minilaws has no `Prop` (predicative universes, as in Agda).
+The prelude defines `Nat`, `Eq`, `Empty`, `Unit`, `Bool` (`false`, `true`) and `List` (`nil`, `cons`) with `inductive` itself, so the kernel has no special cases, plus `Not A := A -> Empty`, `Bool.cond c t e` (if-then-else), `Bool.not`/`and`/`or` and the comparisons `Nat.eqb`/`Nat.ltb`. Every inductive `T` gets two recursors: `T.rec` (motive in `Type 0`) and `T.rec1` (motive in `Type 1`, for types defined by recursion). `T.rec1` is what proves negative laws such as `zero ≠ succ n`; it is safe because minilaws has no `Prop` (predicative universes, as in Agda).
 
 ## Python subset
 
@@ -117,15 +117,21 @@ def add(n: Nat, m: Nat) -> Nat:
     if m == 0:
         return n
     return add(n, m - 1) + 1
+
+def has(xs: list[Nat], k: Nat) -> bool:
+    if not xs:
+        return False
+    return xs[0] == k or has(xs[1:], k)
 ```
 
 Supported:
-- Functions over `Nat`.
-- Structural recursion `f(..., m - 1, ...)` after `if m == 0`, with the other arguments unchanged.
-- Literals, `x + <int>`, and calls to functions defined earlier in the same file.
-- Imports only from `minilaws`.
+- Functions over `Nat`, `bool` and `list[...]` of those (`List Nat`, `Bool` in the laws).
+- Structural recursion: `f(..., m - 1, ...)` after `if m == 0`, or `f(..., xs[1:], ...)` after `if not xs` (where `xs[0]` and `xs[1:]` are allowed), with the other arguments unchanged.
+- Any other `if c: return a` followed by `return b`, and `a if c else b`.
+- Literals, `True`/`False`, `x + <int>`, comparisons of `Nat`s (`==`, `!=`, `<`, `<=`, `>`, `>=`, not chained), `and`/`or`/`not`, list literals, `[a, ...] + xs`.
+- Calls to functions defined earlier in the same file. Imports only from `minilaws`.
 
-Anything else is refused with `unsupported Python (...)`, so a checked module holds only these functions: keep other code in modules that import them. Checked modules can't call each other, which keeps the trusted translator small ([#6](https://github.com/luajapiassu/minilaws/issues/6)). `Nat = int`, and the laws speak about `n >= 0`.
+Anything else is refused with `unsupported Python (...)`, so a checked module holds only these functions: keep other code in modules that import them. Checked modules can't call each other, which keeps the trusted translator small ([#6](https://github.com/luajapiassu/minilaws/issues/6)). The translator doesn't track types: code like `xs == ys` translates, and the kernel rejects it. `Nat = int`, and the laws speak about `n >= 0`. A checked file still needs `from minilaws import Nat`, even if it only uses `bool` and lists: that import is the marker.
 
 ## Optional: Claude Code plugin
 
@@ -152,7 +158,7 @@ Bash commands are watched by their effect, not their text: the hook records the 
 ## Limitations
 
 - Unary `Nat`: `n + k` is `k` nested `succ`s, so checking time grows with `k²`. A literal in checked Python may be at most 10000 (a law over `n + 10000` checks in about 2 s); bigger ones are rejected up front.
-- A checked `.py` module holds only functions over `Nat`: no classes, constants or `if __name__ == "__main__"`.
+- A checked `.py` module holds only functions over `Nat`, `bool` and lists: no classes, constants, loops or `if __name__ == "__main__"`.
 
 Details and possible ways out: [#9](https://github.com/luajapiassu/minilaws/issues/9).
 
