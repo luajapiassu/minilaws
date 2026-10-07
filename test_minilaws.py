@@ -325,12 +325,22 @@ TRANSLATED = PY_ADD + py("""
 
     def wrap(a: Nat) -> list[list[Nat]]:
         return [[], [a, a + 1]]
+
+    LIMIT: Nat = 2
+    TOP: Nat = LIMIT + 1
+
+    def below(a: Nat) -> bool:
+        return a < LIMIT
+
+    def seeded(xs: list[Nat]) -> list[Nat]:
+        return cat([TOP, 0], xs)
     """)
 
 # argument kinds: N = Nat, B = bool, L = list[Nat]
 FUNCTIONS = {"add": "NN", "mul": "NN", "pow2": "N", "pred": "N", "tri": "N", "poly": "NN", "eq": "NN",
              "cmp": "NN", "logic": "BB", "max2": "NN", "clamp": "NN", "sum": "L", "small": "L",
-             "cat": "LL", "has": "LN", "wrap": "N"}
+             "cat": "LL", "has": "LN", "wrap": "N", "below": "N",
+             "seeded": "L"}
 
 
 def test_translation_computes_what_python_computes():
@@ -655,6 +665,75 @@ def test_cli_check_command():
     assert run(good).returncode == 0
     r = run(bad)
     assert r.returncode == 1 and "without proof" in r.stdout
+
+
+def test_python_constant_is_checked_and_usable():
+    src = py("""
+        K: Nat = 3
+        K1: Nat = K + 1
+        def is_k(n: Nat) -> bool:
+            return n == K
+        """)
+    ns = {"Nat": int}
+    exec(src, ns)
+    assert ns["is_k"](3) and ns["K1"] == 4
+    check_source(translate_python(src) + """
+        theorem t : Eq (is_k (succ (succ (succ zero)))) true := refl
+        theorem u : Eq K1 (succ (succ (succ (succ zero)))) := refl
+        """)
+
+
+def test_python_constant_must_be_annotated_and_not_redefined():
+    try:
+        translate_python("K = 3\n")
+        raise AssertionError("translated an unannotated constant")
+    except CheckError as e:
+        assert "unsupported" in str(e), str(e)
+    rejects(translate_python("K: Nat = 3\nK: Nat = 4\n"), "already declared")
+    try:  # a list is mutable: the main block could change it after it was checked
+        translate_python("XS: list[Nat] = [1]\n")
+        raise AssertionError("translated a list constant")
+    except CheckError as e:
+        assert "unsupported" in str(e), str(e)
+
+
+def test_python_main_block_is_skipped():
+    src = PY_ADD + py("""
+        if __name__ == "__main__":
+            x = add(2, 3)
+            print(x)
+        """)
+    assert translate_python(src) == translate_python(PY_ADD)
+
+
+def test_python_main_block_cannot_rebind_checked_names():
+    # the checker would verify one add while the script runs another
+    for body in ("add = max", "def add(a, b): return 0", "from evil import add",
+                 "for add in []: pass", "import evil as add", "del add", "(add := 0)",
+                 "from evil import *", "try: pass\n    except Exception as add: pass",
+                 "match 0:\n        case add: pass", "match []:\n        case [*add]: pass",
+                 "match {}:\n        case {**add}: pass"):
+        src = PY_ADD + f'if __name__ == "__main__":\n    {body}\n'
+        try:
+            translate_python(src)
+        except CheckError as e:
+            assert "unsupported" in str(e) and ("add" in str(e) or "*" in str(e)), str(e)
+            continue
+        raise AssertionError(f"main block rebinding add was translated: {body}")
+
+
+def test_python_main_block_must_be_last_and_plain():
+    for src in (
+        'if __name__ == "__main__":\n    pass\n' + PY_ADD,
+        PY_ADD + 'if __name__ == "__main__":\n    pass\nelse:\n    pass\n',
+        PY_ADD + 'if __name__ != "__main__":\n    pass\n',
+    ):
+        try:
+            translate_python(src)
+        except CheckError as e:
+            assert "unsupported" in str(e), str(e)
+            continue
+        raise AssertionError(f"translated:\n{src}")
 
 
 if __name__ == "__main__":

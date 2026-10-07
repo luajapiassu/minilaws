@@ -862,16 +862,60 @@ def translate_python(src):
     except SyntaxError as e:
         raise CheckError(f"line {e.lineno}: Python syntax error: {e.msg}") from None
     out, defined = [], set()
-    for node in tree.body:
+    for i, node in enumerate(tree.body):
         if _is_docstring(node) or (isinstance(node, ast.ImportFrom) and node.module == "minilaws" and not node.level):
             continue
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             raise _unsupported(node, "only `from minilaws import ...`")
-        if not isinstance(node, ast.FunctionDef):
-            raise _unsupported(node, "only function definitions")
-        out.append(_translate_fn(node, defined))
-        defined.add(node.name)
+        if _is_main_block(node):
+            if i != len(tree.body) - 1 or node.orelse:
+                raise _unsupported(node, '`if __name__ == "__main__":` must be the last statement, with no else')
+            _check_no_rebind(node, defined)
+            continue  # unchecked script code: runs only as `python app.py`, never on import
+        match node:
+            case ast.FunctionDef():
+                out.append(_translate_fn(node, defined))
+            # Nat/bool only: a list constant could be mutated (`XS.append(9)`) after it was checked
+            case ast.AnnAssign(target=ast.Name(id=name), annotation=ann, value=e, simple=1) if e and (ty := _py_type(ann)) in ("Nat", "Bool"):
+                if name in PRELUDE_NAMES:
+                    raise _unsupported(node, f"constant name can't be a prelude name: {name}")
+                out.append(f"def {name} : {ty} := {_py_expr(e, name, {}, None, 'plain', defined)}")
+            case ast.Assign() | ast.AnnAssign():
+                raise _unsupported(node, "constants need a Nat or bool annotation: `K: Nat = 3`")
+            case _:
+                raise _unsupported(node, 'only functions, annotated constants and a final `if __name__ == "__main__":`')
+        defined.add(node.target.id if isinstance(node, ast.AnnAssign) else node.name)
     return "\n".join(out) + "\n"
+
+
+def _is_main_block(node):
+    match node:
+        case ast.If(test=ast.Compare(left=ast.Name(id="__name__"), ops=[ast.Eq()], comparators=[ast.Constant(value="__main__")])):
+            return True
+    return False
+
+
+def _check_no_rebind(block, defined):
+    """Anything bound in the main block can shadow a checked name for the rest of the script.
+    Nested scopes are walked too: conservative, and simpler than tracking scopes. Indirect
+    writes (`globals()[...] = ...`) aren't caught: like an importer's `app.add = ...`, that's
+    code outside what minilaws checks."""
+    for n in ast.walk(block):
+        names = []
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            names = [n.id]
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            names = [n.name]
+        elif isinstance(n, ast.MatchMapping):
+            names = [n.rest]
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            names = [(a.asname or a.name).split(".")[0] for a in n.names]
+            if "*" in names:
+                raise _unsupported(n, "`import *` in the main block could rebind any checked name")
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            names = n.names
+        if hit := sorted(set(names) & defined):
+            raise _unsupported(n, f"the main block rebinds checked names: {hit}")
 
 
 def _unsupported(node, why):
@@ -978,6 +1022,8 @@ def _py_expr(e, fn, types, rec, mode, known):
             if types[x] == "Nat":
                 return "(succ pred')" if step else "zero"
             return "(cons h' t')" if step else "nil"
+        case ast.Name(id=x) if x in known:  # a constant (a bare function name fails in the kernel)
+            return x
         case ast.BinOp(left=left, op=ast.Add(), right=right) if _nat_literal(right):
             return _succs(go(left), right.value)
         case ast.BinOp(left=ast.List(elts=elts), op=ast.Add(), right=right):
