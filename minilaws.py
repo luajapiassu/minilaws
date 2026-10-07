@@ -551,6 +551,11 @@ class Env:
                 fty = instantiate(fty.body, m)
             if a is None:
                 break
+            if not isinstance(fty, Pi) and goals:
+                # e.g. `Nat.rec (fun _ => A -> B) z s n a`: past n the type is `?motive n`,
+                # a Pi only once the motive argument is elaborated
+                self.solve_goals(ctx, goals, fty, partial=True)
+                fty = self.whnf(self.zonk(fty))
             if not isinstance(fty, Pi):
                 raise CheckError(f"'{show(head, ctx)}' applied to too many arguments")
             m = self.new_meta()
@@ -559,7 +564,12 @@ class Env:
             fty = instantiate(fty.body, m)
         if expected is not None:
             goals.insert(0, (None, t, expected))
-        # Solve goals in whatever order makes progress; a stuck goal is rolled back and retried.
+        self.solve_goals(ctx, goals, fty)
+        return apply(core, core_args), fty
+
+    def solve_goals(self, ctx, goals, fty, partial=False):
+        """Solve goals in whatever order makes progress; a stuck goal is rolled back and
+        retried. partial: stop quietly when stuck, leaving the rest in `goals`."""
         while goals:
             progress = False
             for goal in list(goals):
@@ -580,8 +590,9 @@ class Env:
                 goals.remove(goal)
                 progress = True
             if not progress:
+                if partial:
+                    return
                 raise Stuck
-        return apply(core, core_args), fty
 
 
 PRELUDE = """
@@ -948,7 +959,7 @@ def _translate_fn(fn, known):
         raise _unsupported(fn, "parameters and result must be annotated Nat, bool or list[...] of those")
     if reserved := sorted(types.keys() & PRELUDE_NAMES):
         raise _unsupported(fn, f"parameter names can't be prelude names: {reserved}")
-    go = lambda e, rec=None, mode="plain": _py_expr(e, fn.name, types, rec, mode, known)
+    go = lambda e, rec=None, mode="plain", gen=(): _py_expr(e, fn.name, types, rec, mode, known, gen)
     body = fn.body
     if _is_docstring(body[0]):
         body = body[1:]
@@ -963,14 +974,29 @@ def _translate_fn(fn, known):
             m = _rec_test(test, types)
             if m is None:
                 expr = f"Bool.cond {go(test)} {go(then)} {go(other)}"
-            elif types[m] == "Nat":
-                expr = f"Nat.rec (fun _ => {ret}) {go(then, m, 'base')} (fun pred' ih' => {go(other, m, 'step')}) {m}"
             else:
-                expr = f"List.rec (fun _ => {ret}) {go(then, m, 'base')} (fun h' t' ih' => {go(other, m, 'step')}) {m}"
+                # An accumulator (another argument changes in the recursive call) needs the
+                # other arguments in the motive, so the induction hypothesis is a function of them.
+                gen = [p for p in types if p != m] if _changes_others(other, fn.name, list(types), m) else []
+                motive = " -> ".join([types[p] for p in gen] + [ret])
+                bind = "".join(f" {p}" for p in gen)
+                base = f"(fun{bind} => {go(then, m, 'base')})" if gen else go(then, m, "base")
+                fields = "pred'" if types[m] == "Nat" else "h' t'"
+                rec = "Nat.rec" if types[m] == "Nat" else "List.rec"
+                expr = f"{rec} (fun _ => {motive}) {base} (fun {fields} ih'{bind} => {go(other, m, 'step', gen)}) {m}{bind}"
         case _:
             raise _unsupported(fn, "body must be `return e`, or `if ...: return e` then `return e`")
     ty = " -> ".join([*types.values(), ret])
     return f"def {fn.name} : {ty} := " + (f"fun {' '.join(types)} => {expr}" if types else expr)
+
+
+def _changes_others(e, fn, params, rec):
+    """Whether some recursive call passes something other than the same parameter for a non-recursive argument."""
+    return any(
+        isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == fn and len(c.args) == len(params)
+        and any(p != rec and not (isinstance(a, ast.Name) and a.id == p) for p, a in zip(params, c.args))
+        for c in ast.walk(e)
+    )
 
 
 def _rec_test(test, types):
@@ -1003,10 +1029,10 @@ COMPARE = {  # a <op> b, Nats only
 }
 
 
-def _py_expr(e, fn, types, rec, mode, known):
+def _py_expr(e, fn, types, rec, mode, known, gen=()):
     """mode: 'plain' (no recursion), 'base' (rec var is 0 / []), 'step' (rec var is
-    succ pred' / cons h' t')."""
-    go = lambda x: _py_expr(x, fn, types, rec, mode, known)
+    succ pred' / cons h' t'). gen: the arguments the induction hypothesis takes (accumulators)."""
+    go = lambda x: _py_expr(x, fn, types, rec, mode, known, gen)
     step = mode == "step"
     for lit in (e, getattr(e, "right", None)):
         if _nat_literal(lit) and lit.value > MAX_LITERAL:
@@ -1051,12 +1077,13 @@ def _py_expr(e, fn, types, rec, mode, known):
             params = list(types)
             # go(a) is pred' / t' only for `m - 1` / `xs[1:]` on the recursion variable
             ok = step and len(args) == len(params) and all(
-                go(a) in ("pred'", "t'") if p == rec else (isinstance(a, ast.Name) and a.id == p) for p, a in zip(params, args)
+                go(a) in ("pred'", "t'") if p == rec else (p in gen or (isinstance(a, ast.Name) and a.id == p))
+                for p, a in zip(params, args)
             )
             if not ok:
                 raise _unsupported(e, f"recursion must be {fn}(..., m - 1, ...) after `if m == 0` "
-                                      f"or {fn}(..., xs[1:], ...) after `if not xs`, other arguments unchanged")
-            return "ih'"
+                                      f"or {fn}(..., xs[1:], ...) after `if not xs`")
+            return "(" + " ".join(["ih'"] + [go(a) for p, a in zip(params, args) if p in gen]) + ")" if gen else "ih'"
         case ast.Call(func=ast.Name(id=f), args=args, keywords=[]) if f in known:
             return "(" + " ".join([f] + [go(a) for a in args]) + ")"
     if isinstance(e, ast.Call) and isinstance(e.func, ast.Name):

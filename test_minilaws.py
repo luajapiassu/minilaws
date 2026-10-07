@@ -334,13 +334,28 @@ TRANSLATED = PY_ADD + py("""
 
     def seeded(xs: list[Nat]) -> list[Nat]:
         return cat([TOP, 0], xs)
+
+    def shove(n: Nat, m: Nat) -> Nat:
+        if m == 0:
+            return n
+        return shove(n + 1, m - 1)
+
+    def rev(xs: list[Nat], acc: list[Nat]) -> list[Nat]:
+        if not xs:
+            return acc
+        return rev(xs[1:], [xs[0]] + acc)
+
+    def nest(n: Nat, a: Nat, b: Nat) -> Nat:
+        if n == 0:
+            return add(a, b)
+        return nest(n - 1, nest(n - 1, b, a), a + 1)
     """)
 
 # argument kinds: N = Nat, B = bool, L = list[Nat]
 FUNCTIONS = {"add": "NN", "mul": "NN", "pow2": "N", "pred": "N", "tri": "N", "poly": "NN", "eq": "NN",
              "cmp": "NN", "logic": "BB", "max2": "NN", "clamp": "NN", "sum": "L", "small": "L",
              "cat": "LL", "has": "LN", "wrap": "N", "below": "N",
-             "seeded": "L"}
+             "seeded": "L", "shove": "NN", "rev": "LL", "nest": "NNN"}
 
 
 def test_translation_computes_what_python_computes():
@@ -397,6 +412,28 @@ proof cat_nil := fun xs =>
 """)
 
 
+def test_law_about_accumulator_by_generalized_induction():
+    # the motive is a function type (`(n : Nat) -> ...`), so the recursor takes one more argument
+    src = PY_ADD + py("""
+        def shove(n: Nat, m: Nat) -> Nat:
+            if m == 0:
+                return n
+            return shove(n + 1, m - 1)
+        """)
+    check_source(translate_python(src) + """
+theorem cong : {A B : Type 0} -> {a b : A} -> (f : A -> B) -> Eq a b -> Eq (f a) (f b) :=
+  fun {A B a b} f h => Eq.subst (fun x => Eq (f a) (f x)) h refl
+theorem trans : {A : Type 0} -> {a b c : A} -> Eq a b -> Eq b c -> Eq a c :=
+  fun {A a b c} h k => Eq.subst (fun x => Eq a x) k h
+theorem succ_add : (n m : Nat) -> Eq (add (succ n) m) (succ (add n m)) :=
+  fun n m => Nat.rec (fun m => Eq (add (succ n) m) (succ (add n m))) refl (fun m ih => cong succ ih) m
+law shove_add : (n m : Nat) -> Eq (shove n m) (add n m)
+proof shove_add := fun n m =>
+  Nat.rec (fun m => (n : Nat) -> Eq (shove n m) (add n m))
+    (fun n => refl) (fun m ih n => trans (ih (succ n)) (succ_add n m)) m n
+""")
+
+
 def test_python_type_errors_are_rejected_by_the_kernel():
     # the translator doesn't track types; comparing lists still can't get through
     rejects(translate_python(py("""
@@ -419,10 +456,10 @@ UNSUPPORTED = [
         return f(n - 2)
     """,
     """
-    def f(n: Nat, m: Nat) -> Nat:  # the other argument changes in the recursive call
+    def f(n: Nat, m: Nat) -> Nat:  # recursion on m, but m lands in n's place
         if m == 0:
             return n
-        return f(n + 1, m - 1)
+        return f(m - 1, n)
     """,
     """
     def f(n: int) -> int:  # not Nat
