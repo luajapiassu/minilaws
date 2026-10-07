@@ -41,7 +41,8 @@ inductive List (A : Type 0) : Type 0 where
 @f A x                            -- pass implicits explicitly when inference fails
 ```
 
-Built-ins: `Nat` (`zero`, `succ`, `Nat.rec`), `Eq a b` (`refl`, `Eq.rec`, `Eq.subst`).
+Built-ins: `Nat` (`zero`, `succ`, `Nat.rec`), `Eq a b` (`refl`, `Eq.rec`, `Eq.subst`),
+`Empty`, `Unit` (`tt`), `Not A` (= `A -> Empty`). Every inductive `T` also gets `T.rec1`.
 
 ## Proof patterns
 
@@ -62,6 +63,13 @@ Built-ins: `Nat` (`zero`, `succ`, `Nat.rec`), `Eq a b` (`refl`, `Eq.rec`, `Eq.su
     fun {A a b} h => Eq.subst (fun x => Eq x a) h refl
   theorem trans : {A : Type 0} -> {a b c : A} -> Eq a b -> Eq b c -> Eq a c :=
     fun {A a b c} h1 h2 => Eq.subst (fun x => Eq a x) h2 h1
+  ```
+- **Constructors differ / "never happens"** → `Not (...)`. Define a type by recursion
+  with `T.rec1` (motive in `Type 1`), `Unit` on one constructor and `Empty` on the others,
+  then transport `tt` along the impossible equation:
+  ```
+  def IsZero : Nat -> Type 0 := fun n => Nat.rec1 (fun _ => Type 0) Unit (fun _ _ => Empty) n
+  theorem zero_ne_succ : (n : Nat) -> Not (Eq zero (succ n)) := fun n h => Eq.subst IsZero h tt
   ```
 - **Using another law** → apply it as a function, for example `symm (succ_add k a)`.
 - Write a lambda's binder type when inference can't see it, for example

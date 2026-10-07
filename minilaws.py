@@ -181,7 +181,7 @@ class Env:
         self.defs = {}   # name -> body (unfoldable)
         self.laws = {}   # name -> statement still awaiting a proof
         self.metas = {}  # meta id -> solution (None = unsolved)
-        self.recursors = {}  # "T.rec" -> (n_params, n_minors, n_indices, {ctor: iota info})
+        self.recursors = {}  # "T.rec"/"T.rec1" -> (n_params, n_minors, n_indices, {ctor: iota info})
         self.n_fresh = 0
         check_source(PRELUDE, self)
         self.prelude_size = len(self.types)
@@ -310,7 +310,7 @@ class Env:
 
     def add_inductive(self, name, params, arity, ctors):
         rec_name = f"{name}.rec"
-        for n in [name, rec_name] + [c for c, _ in ctors]:
+        for n in [name, rec_name, rec_name + "1"] + [c for c, _ in ctors]:
             if n in self.types:
                 raise CheckError(f"'{n}' already declared")
 
@@ -355,27 +355,31 @@ class Env:
 
         # T.rec : {params} -> (motive : (indices) -> T params indices -> Type 0)
         #         -> (one minor premise per constructor) -> {indices} -> (t : T params indices) -> motive indices t
-        motive, major = self.fresh("motive"), self.fresh("t")
-        M, I = Const(motive), [Const(f) for f, *_ in idx]
-        motive_ty = close_pi(idx + [(major, "t", apply(Const(name), P + I), False)], Sort(0))
-        minors = []
-        for cname, fields, rix, recs in info:
-            fs = [(f, n, d, False) for f, n, d, _ in fields]
-            ihs = [(self.fresh("ih"), "ih", apply(M, ixs + [Const(fields[pos][0])]), False) for pos, ixs in recs]
-            target = apply(M, rix + [apply(Const(cname), P + [Const(f) for f, *_ in fields])])
-            minors.append((self.fresh(cname), cname, close_pi(fs + ihs, target), False))
-        rec_ty = close_pi(
-            [(f, n, d, True) for f, n, d, _ in ps]
-            + [(motive, "motive", motive_ty, False)]
-            + minors
-            + [(f, n, d, True) for f, n, d, _ in idx]
-            + [(major, "t", apply(Const(name), P + I), False)],
-            apply(M, I + [Const(major)]),
-        )
-        self.sort_of([], rec_ty)  # sanity: the generated recursor type is well-formed
-        self.types[rec_name] = rec_ty
+        # T.rec1 is the same with the motive in Type 1 (large elimination: types defined by
+        # recursion). Safe without Prop: predicative Martin-Lof type theory allows it.
         ctor_info = {c: (j, [f for f, *_ in fields], [f for f, *_ in ps], recs) for j, (c, fields, _, recs) in enumerate(info)}
-        self.recursors[rec_name] = (np, len(info), len(idx), ctor_info)
+        for level in (0, 1):
+            motive, major = self.fresh("motive"), self.fresh("t")
+            M, I = Const(motive), [Const(f) for f, *_ in idx]
+            motive_ty = close_pi(idx + [(major, "t", apply(Const(name), P + I), False)], Sort(level))
+            minors = []
+            for cname, fields, rix, recs in info:
+                fs = [(f, n, d, False) for f, n, d, _ in fields]
+                ihs = [(self.fresh("ih"), "ih", apply(M, ixs + [Const(fields[pos][0])]), False) for pos, ixs in recs]
+                target = apply(M, rix + [apply(Const(cname), P + [Const(f) for f, *_ in fields])])
+                minors.append((self.fresh(cname), cname, close_pi(fs + ihs, target), False))
+            rec_ty = close_pi(
+                [(f, n, d, True) for f, n, d, _ in ps]
+                + [(motive, "motive", motive_ty, False)]
+                + minors
+                + [(f, n, d, True) for f, n, d, _ in idx]
+                + [(major, "t", apply(Const(name), P + I), False)],
+                apply(M, I + [Const(major)]),
+            )
+            self.sort_of([], rec_ty)  # sanity: the generated recursor type is well-formed
+            rec = rec_name + "1" * level
+            self.types[rec] = rec_ty
+            self.recursors[rec] = (np, len(info), len(idx), ctor_info)
 
     # ---------- elaborator (untrusted: its output is re-checked by the kernel) ----------
     # Metas are created and solved at one context depth; they never cross a binder
@@ -453,7 +457,10 @@ class Env:
                     return self.unify(x1, x2, k)
                 except Mismatch:
                     pass
-        if has_meta(self.zonk(a, k)) or has_meta(self.zonk(b, k)):
+        za, zb = self.zonk(a, k), self.zonk(b, k)
+        if za != a or zb != b:
+            return self.unify(za, zb, k)  # a solved meta deeper in (e.g. a major premise) blocked whnf
+        if has_meta(za) or has_meta(zb):
             raise Stuck
         raise Mismatch()
 
@@ -585,6 +592,10 @@ inductive Eq {A : Type 0} (x : A) : A -> Type 0 where
   | refl : Eq x x
 theorem Eq.subst : {A : Type 0} -> {x y : A} -> (P : A -> Type 0) -> Eq x y -> P x -> P y :=
   fun P h px => Eq.rec (fun y _ => P y) px h
+inductive Empty : Type 0 where
+inductive Unit : Type 0 where
+  | tt : Unit
+def Not : Type 0 -> Type 0 := fun A => A -> Empty
 """
 
 
@@ -949,7 +960,7 @@ PHASE = {"inductive": 0, "def": 0, "law": 1, "theorem": 2, "proof": 2}
 def declared_names(decl):
     kind, name, *payload = decl
     if kind == "inductive":
-        return {name, f"{name}.rec"} | {c for c, _ in payload[2]}
+        return {name, f"{name}.rec", f"{name}.rec1"} | {c for c, _ in payload[2]}
     return {name}  # for a proof: the law it makes usable
 
 
@@ -1090,7 +1101,7 @@ def law_specs(env, decls, root):
     root = Path(root).resolve()
     origin = {n: Path(p).resolve() for p, d in decls if d[0] != "proof" for n in declared_names(d)}
     rel = lambda p: p.relative_to(root).as_posix() if p.is_relative_to(root) else p.name
-    ctors = {rec[: -len(".rec")]: list(info[3]) for rec, info in env.recursors.items()}
+    ctors = {rec.removesuffix(".rec"): list(info[3]) for rec, info in env.recursors.items() if rec.endswith(".rec")}
     specs = {}
     for _, (kind, name, *_) in decls:
         if kind != "law":

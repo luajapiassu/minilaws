@@ -179,6 +179,32 @@ def test_rejects_constructor_of_another_type():
     rejects("inductive L (A : Type 0) : Type 0 where\n  | mk : L Nat", "must return L A")
 
 
+# ---------- large elimination (T.rec1) ----------
+
+IS_ZERO = "def IsZero : Nat -> Type 0 := fun n => Nat.rec1 (fun _ => Type 0) Unit (fun _ _ => Empty) n\n"
+
+
+def test_large_elimination_proves_constructors_differ():
+    check_source(IS_ZERO + "theorem zero_ne_succ : (n : Nat) -> Not (Eq zero (succ n)) := fun n h => Eq.subst IsZero h tt")
+
+
+def test_large_elimination_on_user_inductive():
+    check_source("""
+inductive Bool : Type 0 where
+  | true : Bool
+  | false : Bool
+def IsTrue : Bool -> Type 0 := fun b => Bool.rec1 (fun _ => Type 0) Unit Empty b
+theorem true_ne_false : Not (Eq true false) := fun h => Eq.subst IsTrue h tt
+""")
+
+
+def test_large_elimination_proves_nothing_false():
+    rejects(IS_ZERO + "theorem bad : Not (Eq zero zero) := fun h => Eq.subst IsZero h tt", "type mismatch")
+    rejects(IS_ZERO + "theorem bad : Empty := Eq.subst IsZero (@refl Nat zero) tt", "type mismatch")
+    # the motive may land in Type 1, no higher
+    rejects("def T : Nat -> Type 1 := fun n => Nat.rec1 (fun _ => Type 1) (Type 0) (fun _ _ => Type 0) n", "type mismatch")
+
+
 # ---------- Python -> minilaws ----------
 
 PY_ADD = """

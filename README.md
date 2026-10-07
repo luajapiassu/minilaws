@@ -106,7 +106,7 @@ inductive List (A : Type 0) : Type 0 where
 @f A x                            -- pass implicit arguments explicitly
 ```
 
-The prelude defines `Nat` and `Eq` with `inductive` itself, so the kernel has no special cases.
+The prelude defines `Nat`, `Eq`, `Empty` and `Unit` with `inductive` itself, so the kernel has no special cases, plus `Not A := A -> Empty`. Every inductive `T` gets two recursors: `T.rec` (motive in `Type 0`) and `T.rec1` (motive in `Type 1`, for types defined by recursion). `T.rec1` is what proves negative laws such as `zero ≠ succ n`; it is safe because minilaws has no `Prop` (predicative universes, as in Agda).
 
 ## Python subset
 
@@ -151,7 +151,6 @@ Bash commands are watched by their effect, not their text: the hook records the 
 
 ## Limitations
 
-- Recursors only eliminate into `Type 0`, so there is no large elimination: you can't prove that constructors differ (`zero ≠ succ n`) or other negative statements.
 - Unary `Nat`: `n + k` is `k` nested `succ`s, so checking time grows with `k²`. A literal in checked Python may be at most 10000 (a law over `n + 10000` checks in about 2 s); bigger ones are rejected up front.
 - A checked `.py` module holds only functions over `Nat`: no classes, constants or `if __name__ == "__main__"`.
 
