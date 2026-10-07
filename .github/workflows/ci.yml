@@ -1,0 +1,26 @@
+# Every PR and push to main: the tests, and the examples' laws against the base branch
+# (what the README tells users to run). This checks the checker from the PR itself, which is
+# fine here: the examples are this repo's tests, not laws an AI is being held to.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e . pytest && python -m pytest -q
+      - if: github.event_name == 'pull_request'
+        run: minilaws check examples --against origin/${{ github.base_ref }}

@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parent
 HOOK = ROOT / "hooks" / "hook.py"
 CONFIG = 'files = ["app.py", "LAWS.laws", "proofs.laws"]\n'
@@ -163,3 +165,43 @@ if __name__ == "__main__":
                 failed += 1
                 print("FAIL", name, "--", type(e).__name__, str(e).splitlines()[0] if str(e) else "")
     raise SystemExit(failed)
+
+
+# ---------- the command in hooks.json: python3, else python, never both ----------
+
+BASH = shutil.which("bash")
+needs_bash = pytest.mark.skipif(BASH is None or "system32" in BASH.lower(), reason="needs a POSIX bash (not WSL's)")
+
+
+def hook_command(shims):
+    """Run the `pre` command from hooks.json with only the given fake interpreters on PATH.
+    shims: {name: (exit code for `-c ''`, exit code when run on the hook)}. Returns
+    (exit code, stderr, the shims that ran the hook)."""
+    d = Path(tempfile.mkdtemp())
+    log = d / "log"
+    for name, (probe, code) in shims.items():
+        (d / name).write_text(f'#!/bin/sh\n[ "$1" = -c ] && exit {probe}\necho {name} >> "{log.as_posix()}"\nexit {code}\n')
+        (d / name).chmod(0o755)
+    command = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    r = subprocess.run([BASH, "-c", command], capture_output=True, text=True,
+                       env={"PATH": d.as_posix(), "CLAUDE_PLUGIN_ROOT": ROOT.as_posix()})
+    return r.returncode, r.stderr, log.read_text().split() if log.exists() else []
+
+
+@needs_bash
+def test_hook_command_prefers_python3_and_runs_once():
+    # python3 blocks the edit (exit 2): python must not run it a second time
+    assert hook_command({"python3": (0, 2), "python": (0, 0)})[::2] == (2, ["python3"])
+
+
+@needs_bash
+def test_hook_command_falls_back_to_python():
+    # macOS without python3 is the other way round; a broken python3 stub (Windows Store) likewise
+    assert hook_command({"python": (0, 0)})[::2] == (0, ["python"])
+    assert hook_command({"python3": (9009, 0), "python": (0, 0)})[::2] == (0, ["python"])
+
+
+@needs_bash
+def test_hook_command_without_python_fails_closed():
+    code, err, ran = hook_command({})
+    assert (code, ran) == (2, []) and "python" in err
