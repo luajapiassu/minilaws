@@ -5,6 +5,43 @@ minilaws applies this to AI-edited code, with a dependent-type proof checker in 
 
 You write ordinary Python, an AI is free to edit it, and the laws in `LAWS.laws` must keep holding. If an edit breaks a law, your tests fail.
 
+## Example: a traffic light
+
+[`examples/traffic/`](examples/traffic) runs a crossing. Its one law, written by a human:
+
+```
+-- the avenue and the street are never open (green or yellow) at the same time
+law no_crash : (p : Nat) -> Eq (Bool.and (go (avenue p)) (go (street p))) false
+```
+
+<img src="media/traffic_law.gif" width="320" alt="Cars take turns at the crossing">
+
+*So far, it works.*
+
+**New feature:** "Claude, give the avenue a longer green."
+
+**Without minilaws:** Claude stretched the avenue's green, which pushed its yellow into phase 2, where the street is already green.
+
+<img src="media/traffic_bug.gif" width="320" alt="Avenue on yellow, street on green: two cars crash">
+
+*Law broken. AI mistake: merged.*
+
+**With minilaws:** the same edit fails the check, in the phase that crashes (`succ (succ zero)` = 2):
+
+```
+REJECTED: proofs.laws: proof no_crash: type mismatch in 'refl'
+  expected: (fun k => Eq Bool (crash (succ (succ k))) false) zero
+  got:      Eq Bool (crash (succ (succ zero))) (crash (succ (succ zero)))
+```
+
+Claude retried: it moved the street's green to phase 3 and added one case to the proof.
+
+<img src="media/traffic_kept.gif" width="320" alt="Longer green for the avenue, cars still take turns">
+
+*Law intact. AI mistake: blocked.*
+
+The GIFs are rendered by [`media/traffic.py`](media/traffic.py): it checks each version with minilaws, then lets that version's own `avenue`/`street`/`next_phase` drive the cars.
+
 ## The strategy
 
 It's the approach of OpenAI's Navier-Stokes announcement, scaled down: let the AI do the work, and make checking that work cheap. There, a [swarm of agents](https://explainx.ai/blog/openai-navier-stokes-solution-agent-swarm-2026) produced the proof, and a Lean 4 formalization of it was checked in [17 hours](https://explainx.ai/blog/lean-4-formal-proof-cost-collapse-navier-stokes-2026). Checking it by hand was estimated at about 132,800 human-hours. Here, the AI writes the code and the proofs, and a small kernel checks them on every test run.

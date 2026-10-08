@@ -1,0 +1,9 @@
+-- Written by the AI. One case per phase; every phase from 4 on is red/red.
+def crash : Nat -> Bool := fun p => Bool.and (go (avenue p)) (go (street p))
+
+proof no_crash := fun p =>
+  Nat.rec (fun k => Eq (crash k) false) refl (fun p _ =>
+  Nat.rec (fun k => Eq (crash (succ k)) false) refl (fun p _ =>
+  Nat.rec (fun k => Eq (crash (succ (succ k))) false) refl (fun p _ =>
+  Nat.rec (fun k => Eq (crash (succ (succ (succ k)))) false) refl (fun p _ =>
+  refl) p) p) p) p
