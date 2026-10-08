@@ -220,6 +220,11 @@ class Env:
                 return self.conv(a1, a2) and self.conv(b1, b2)
             case Lam(_, _, b1), Lam(_, _, b2):
                 return self.conv(b1, b2)
+            # eta: f == fun x => f x
+            case Lam(_, _, b1), _:
+                return self.conv(b1, App(shift(b, 1), Var(0)))
+            case _, Lam(_, _, b2):
+                return self.conv(App(shift(a, 1), Var(0)), b2)
             case App(f1, x1), App(f2, x2):
                 return self.conv(f1, f2) and self.conv(x1, x2)
         return a == b
@@ -451,6 +456,10 @@ class Env:
                 return self.unify(b1, b2, k + 1)
             case Lam(_, _, b1), Lam(_, _, b2):
                 return self.unify(b1, b2, k + 1)
+            case Lam(_, _, b1), _:  # eta, as in the kernel's conv
+                return self.unify(b1, App(shift(b, 1), Var(0)), k + 1)
+            case _, Lam(_, _, b2):
+                return self.unify(App(shift(a, 1), Var(0)), b2, k + 1)
             case App(f1, x1), App(f2, x2):
                 try:
                     self.unify(f1, f2, k)

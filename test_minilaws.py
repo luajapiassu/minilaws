@@ -784,3 +784,14 @@ if __name__ == "__main__":
                 failed += 1
                 print("FAIL", name, "--", type(e).__name__, str(e).splitlines()[0] if str(e) else "")
     raise SystemExit(failed)
+
+
+def test_eta_conversion():
+    # Lean identifies f with fun x => f x; so does the kernel, in both directions
+    check_source("theorem eta : (f : Nat -> Nat) -> Eq f (fun x => f x) := fun f => refl")
+    check_source("theorem eta' : (f : Nat -> Nat) -> Eq (fun x => f x) f := fun f => refl")
+    env = Env()
+    f = Var(0)
+    assert env.conv(f, Lam("x", None, App(Var(1), Var(0))))
+    assert env.conv(Lam("x", None, App(Var(1), Var(0))), f)
+    assert not env.conv(f, Lam("x", None, App(Var(1), Const("zero"))))  # not an eta-expansion
