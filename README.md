@@ -152,7 +152,7 @@ Bash commands are watched by their effect, not their text: the hook records the 
 - Inductive types must be strictly positive, and a definition can't call itself. Every term terminates, so there are no looping "proofs".
 - An unproved `law` isn't in scope, so it can't be used as a hypothesis.
 - For proofs, the elaborator (implicit arguments) is **not trusted**. The kernel (`whnf`, `conv`, `infer`, `check`, recursor generation) re-checks its fully explicit output.
-- For law statements, the elaborator **is** trusted: the kernel checks that a statement is well-formed, not that it says what you wrote. When a statement changes, `--against` prints the elaborated version for the human who approves it.
+- For law statements, the elaborator **is** trusted: the kernel checks that a statement is well-formed, not that it says what you wrote. In practice that trust is small. A wrongly filled implicit (`Eq ?A`) almost always makes the statement ill-typed, so the kernel rejects it; what's left is the explicit structure, which is what the human reads. When a statement changes, `--against` prints the elaborated version for the human who approves it. Requiring every implicit to be written out (`@Eq Nat ...`) would close the remaining gap at the cost of verbose laws; not done until a real elaborator bug calls for it ([#30](https://github.com/luajapiassu/minilaws/issues/30)).
 - The Python translator **is** trusted, so keep its subset small. A differential test runs translated functions in the kernel and in Python and requires the same results.
 
 ## Limitations
