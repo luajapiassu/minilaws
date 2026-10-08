@@ -1,0 +1,5 @@
+-- Human-owned. Cars may enter on green or yellow.
+def go : Nat -> Bool := fun c => Bool.not (Nat.eqb c RED)
+
+-- "the avenue and the street are never open at the same time", in every phase
+law no_crash : (p : Nat) -> Eq (Bool.and (go (avenue p)) (go (street p))) false
