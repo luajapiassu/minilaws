@@ -1,6 +1,6 @@
 {
   "name": "minilaws",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Proof-checked laws for AI-edited code: Claude can't edit LAWS.laws, and every edit must keep all proofs valid.",
   "author": { "name": "Lua Japiassu" },
   "license": "MIT",

@@ -99,7 +99,10 @@ Allowed:
 - Parameters and results annotated `Nat`, `bool` or `list[...]` of those.
 - At most one `if ...: return ...`, followed by one `return ...`. With `if m == 0` (Nat
   parameter) or `if not xs` (list parameter) it's structural recursion: `f(..., m - 1, ...)`
-  or `f(..., xs[1:], ...)`, other arguments unchanged; `xs[0]` and `xs[1:]` only there.
+  or `f(..., xs[1:], ...)`; `xs[0]` and `xs[1:]` only there. The other arguments may change
+  (accumulators): then the translation's motive takes them, `Nat.rec (fun _ => A -> R) ... m a`,
+  and a proof about it inducts with the accumulator generalized:
+  `Nat.rec (fun m => (a : A) -> P a m) (fun a => ...) (fun m ih a => ... ih (...) ...) m a`.
   Any other condition is a plain if-then-else, without recursion.
 - Literals, `True`/`False`, `x + <int>`, comparisons of `Nat`s (not chained), `and`/`or`/`not`,
   `a if c else b`, list literals, `[a, ...] + xs`, and calls to functions defined earlier in

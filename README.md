@@ -76,7 +76,7 @@ In CI, run it against the PR's base branch, through pytest or the CLI:
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- run: pip install minilaws==0.3.0
+- run: pip install minilaws==0.5.0
 - run: pytest --minilaws-against=origin/${{ github.base_ref }}   # or: minilaws check --against ...
 ```
 
@@ -126,7 +126,7 @@ def has(xs: list[Nat], k: Nat) -> bool:
 
 Supported:
 - Functions over `Nat`, `bool` and `list[...]` of those (`List Nat`, `Bool` in the laws).
-- Structural recursion: `f(..., m - 1, ...)` after `if m == 0`, or `f(..., xs[1:], ...)` after `if not xs` (where `xs[0]` and `xs[1:]` are allowed), with the other arguments unchanged.
+- Structural recursion: `f(..., m - 1, ...)` after `if m == 0`, or `f(..., xs[1:], ...)` after `if not xs` (where `xs[0]` and `xs[1:]` are allowed). The other arguments may change, as accumulators do: `rev(xs[1:], [xs[0]] + acc)`.
 - Any other `if c: return a` followed by `return b`, and `a if c else b`.
 - Literals, `True`/`False`, `x + <int>`, comparisons of `Nat`s (`==`, `!=`, `<`, `<=`, `>`, `>=`, not chained), `and`/`or`/`not`, list literals, `[a, ...] + xs`.
 - Calls to functions defined earlier in the same file. Imports only from `minilaws`.
